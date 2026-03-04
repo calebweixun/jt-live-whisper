@@ -63,6 +63,44 @@ C_BADGE_FAST = "\x1b[48;2;80;255;120m\x1b[38;2;0;0;0m"    # 綠底黑字 < 1s
 C_BADGE_NORMAL = "\x1b[48;2;255;220;80m\x1b[38;2;0;0;0m"  # 黃底黑字 1-3s
 C_BADGE_SLOW = "\x1b[48;2;255;100;100m\x1b[38;2;0;0;0m"   # 紅底黑字 > 3s
 
+
+def _str_display_width(s):
+    """計算字串可見寬度（去除 ANSI 跳脫碼，CJK/全形算 2 格）"""
+    w = 0
+    in_esc = False
+    for c in s:
+        if c == '\x1b':
+            in_esc = True
+            continue
+        if in_esc:
+            if c == 'm':
+                in_esc = False
+            continue
+        if ('\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u303f'
+                or '\uff00' <= c <= '\uffef' or '\u3400' <= c <= '\u4dbf'):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _print_with_badge(text, badge_color, elapsed):
+    """輸出翻譯文字 + 速度 badge，避免 badge 換行導致背景色延伸整行"""
+    badge_str = f" {elapsed:.1f}s "
+    badge_len = len(badge_str)
+    text_width = _str_display_width(text)
+    try:
+        cols = os.get_terminal_size().columns
+    except Exception:
+        cols = 80
+    cursor_col = text_width % cols
+    if cursor_col + 2 + badge_len > cols:
+        # badge 放不下，換行後縮排顯示
+        print(f"{text}\n    {badge_color}{badge_str}{RESET}", flush=True)
+    else:
+        print(f"{text}  {badge_color}{badge_str}{RESET}", flush=True)
+
+
 # 說話者辨識色彩（8 色循環，24-bit 真彩色）
 SPEAKER_COLORS = [
     "\x1b[38;2;255;165;80m",   # 橘色
@@ -1574,7 +1612,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                 dst_color, dst_label = C_ZH, "中"
                 src_label = "EN"
             with print_lock:
-                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_badge} {elapsed:.1f}s {RESET}", flush=True)
+                _print_with_badge(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}", speed_badge, elapsed)
                 print(flush=True)
                 _status_bar_state["count"] += 1
                 refresh_status_bar()
@@ -1764,7 +1802,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
         print(f"  {C_DIM}摘要模型: {summary_model} ({summary_host}:{summary_port}){RESET}")
 
         try:
-            out_path, summary_text = summarize_log_file(
+            out_path, summary_text, html_path = summarize_log_file(
                 log_path, summary_model, summary_host, summary_port,
                 server_type=summary_server_type
             )
@@ -1772,8 +1810,10 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                 print(f"\n{C_DIM}{'═' * 60}{RESET}")
                 print(f"  {C_OK}{BOLD}摘要已儲存（含重點摘要 + 校正逐字稿）{RESET}")
                 print(f"  {C_WHITE}{out_path}{RESET}")
+                print(f"  {C_WHITE}{html_path}{RESET}")
                 print(f"{C_DIM}{'═' * 60}{RESET}")
-                open_file_in_editor(out_path)
+                print(f"\n{C_HIGHLIGHT}按 ESC 鍵退出{RESET}", flush=True)
+                _wait_for_esc()
         except Exception as e:
             print(f"\n{C_HIGHLIGHT}[錯誤] 摘要生成失敗: {e}{RESET}", file=sys.stderr)
 
@@ -1838,7 +1878,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
                 src_label = "EN"
             with print_lock:
                 _clear_partial_line()  # 清除 [...] 部分文字
-                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_badge} {elapsed:.1f}s {RESET}", flush=True)
+                _print_with_badge(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}", speed_badge, elapsed)
                 print(flush=True)
                 _status_bar_state["count"] += 1
                 refresh_status_bar()
@@ -2054,7 +2094,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
         print(f"  {C_DIM}摘要模型: {summary_model} ({summary_host}:{summary_port}){RESET}")
 
         try:
-            out_path, summary_text = summarize_log_file(
+            out_path, summary_text, html_path = summarize_log_file(
                 log_path, summary_model, summary_host, summary_port,
                 server_type=summary_server_type
             )
@@ -2062,8 +2102,10 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
                 print(f"\n{C_DIM}{'═' * 60}{RESET}")
                 print(f"  {C_OK}{BOLD}摘要已儲存（含重點摘要 + 校正逐字稿）{RESET}")
                 print(f"  {C_WHITE}{out_path}{RESET}")
+                print(f"  {C_WHITE}{html_path}{RESET}")
                 print(f"{C_DIM}{'═' * 60}{RESET}")
-                open_file_in_editor(out_path)
+                print(f"\n{C_HIGHLIGHT}按 ESC 鍵退出{RESET}", flush=True)
+                _wait_for_esc()
         except Exception as e:
             print(f"\n{C_HIGHLIGHT}[錯誤] 摘要生成失敗: {e}{RESET}", file=sys.stderr)
 
@@ -2826,8 +2868,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
                             speed_badge = C_BADGE_NORMAL
                         else:
                             speed_badge = C_BADGE_SLOW
-                        print(f"{dst_color}{BOLD}{ts_tag} {spk_tag_term}[{dst_label}] {result}{RESET}  "
-                              f"{speed_badge} {elapsed:.1f}s {RESET}", flush=True)
+                        _print_with_badge(f"{dst_color}{BOLD}{ts_tag} {spk_tag_term}[{dst_label}] {result}{RESET}", speed_badge, elapsed)
                         print(flush=True)
 
                         log_f.write(f"{ts_tag} {spk_tag_log}[{src_label}] {text}\n")
@@ -2879,13 +2920,13 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
 
 def summarize_log_file(input_path, model, host, port, server_type="ollama"):
     """讀取記錄檔 → 建 prompt → 呼叫 LLM → S2TWP 轉換 → 寫摘要檔
-    回傳 (output_path, summary_text)"""
+    回傳 (output_path, summary_text, html_path)"""
     with open(input_path, "r", encoding="utf-8") as f:
         transcript = f.read().strip()
 
     if not transcript:
         print(f"  {C_HIGHLIGHT}[跳過] 檔案內容為空: {input_path}{RESET}")
-        return None, None
+        return None, None, None
 
     basename = os.path.basename(input_path)
     dirpath = os.path.dirname(input_path) or "."
@@ -2958,7 +2999,71 @@ def summarize_log_file(input_path, model, host, port, server_type="ollama"):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(summary + "\n")
 
-    return output_path, summary
+    # 同步產生 HTML 摘要
+    html_path = os.path.splitext(output_path)[0] + ".html"
+    _summary_to_html(summary, html_path, os.path.basename(input_path))
+    subprocess.Popen(["open", html_path])
+
+    return output_path, summary, html_path
+
+
+def _summary_to_html(summary_text, html_path, source_name=""):
+    """將摘要純文字轉為帶樣式的 HTML 檔"""
+    import html as html_mod
+
+    lines = summary_text.split("\n")
+    body_parts = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            body_parts.append("<br>")
+            continue
+        escaped = html_mod.escape(s)
+        # bold: **text**
+        escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+        if s.startswith("## "):
+            body_parts.append(f'<h2>{escaped[4:]}</h2>')
+        elif s.startswith("# "):
+            body_parts.append(f'<h1>{escaped[3:]}</h1>')
+        elif s.startswith("---"):
+            body_parts.append("<hr>")
+        elif s.startswith("- "):
+            body_parts.append(f'<li>{escaped[2:]}</li>')
+        elif re.match(r'^(Speaker \d|講者 ?\d)', s):
+            body_parts.append(f'<p class="speaker">{escaped}</p>')
+        else:
+            body_parts.append(f"<p>{escaped}</p>")
+
+    body_html = "\n".join(body_parts)
+    title = html_mod.escape(source_name) if source_name else "AI 摘要"
+    page = f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} - AI 摘要</title>
+<style>
+  body {{ font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+         max-width: 800px; margin: 40px auto; padding: 0 20px;
+         background: #1a1a2e; color: #e0e0e0; line-height: 1.8; }}
+  h1 {{ color: #82aaff; border-bottom: 2px solid #82aaff; padding-bottom: 8px; }}
+  h2 {{ color: #c792ea; margin-top: 1.5em; }}
+  li {{ color: #a8d8a8; margin: 4px 0; }}
+  hr {{ border: none; border-top: 1px solid #444; margin: 1.5em 0; }}
+  p {{ margin: 0.4em 0; }}
+  .speaker {{ color: #ffcb6b; font-weight: bold; margin-top: 1em; }}
+  strong {{ color: #f78c6c; }}
+  .meta {{ color: #888; font-size: 0.85em; margin-bottom: 2em; }}
+</style>
+</head>
+<body>
+<div class="meta">來源：{title} | 由 jt-live-whisper AI 摘要產生</div>
+{body_html}
+</body>
+</html>"""
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(page)
+    return html_path
 
 
 # ─── 終端機管理（Ctrl+S 支援）────────────────────
@@ -3364,14 +3469,14 @@ def main():
             for lp in log_paths:
                 print(f"\n  {C_DIM}摘要: {os.path.basename(lp)}{RESET}")
                 try:
-                    out_path, _ = summarize_log_file(lp, summary_model, host, port,
-                                                       server_type=server_type)
+                    out_path, _, html_path = summarize_log_file(lp, summary_model, host, port,
+                                                                  server_type=server_type)
                     if out_path:
                         print(f"\n{C_DIM}{'═' * 60}{RESET}")
                         print(f"  {C_OK}{BOLD}摘要已儲存（含重點摘要 + 校正逐字稿）{RESET}")
                         print(f"  {C_WHITE}{out_path}{RESET}")
+                        print(f"  {C_WHITE}{html_path}{RESET}")
                         print(f"{C_DIM}{'═' * 60}{RESET}")
-                        open_file_in_editor(out_path)
                 except Exception as e:
                     print(f"  {C_HIGHLIGHT}[錯誤] 摘要失敗: {e}{RESET}")
 
@@ -3379,6 +3484,8 @@ def main():
             print(f"\n{C_HIGHLIGHT}沒有成功處理的檔案{RESET}")
             sys.exit(1)
 
+        print(f"\n{C_HIGHLIGHT}按 ESC 鍵退出{RESET}", flush=True)
+        _wait_for_esc()
         sys.exit(0)
 
     # --summarize 批次摘要模式（不需 ASR 引擎）
@@ -3497,9 +3604,16 @@ def main():
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(summary + "\n")
 
+            # 同步產生 HTML 摘要
+            html_path = os.path.splitext(output_path)[0] + ".html"
+            source_name = os.path.basename(valid_files[0]) if valid_files else ""
+            _summary_to_html(summary, html_path, source_name)
+            subprocess.Popen(["open", html_path])
+
             print(f"\n{C_DIM}{'═' * 60}{RESET}")
             print(f"  {C_OK}{BOLD}摘要已儲存（含重點摘要 + 校正逐字稿）{RESET}")
             print(f"  {C_WHITE}{output_path}{RESET}")
+            print(f"  {C_WHITE}{html_path}{RESET}")
             print(f"{C_DIM}{'═' * 60}{RESET}")
             open_file_in_editor(output_path)
             print(f"\n{C_HIGHLIGHT}按 ESC 鍵退出{RESET}", flush=True)
