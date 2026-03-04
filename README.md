@@ -145,7 +145,7 @@ brew install ollama
 ollama pull qwen2.5:14b
 ```
 
-> **推薦硬體：** 如果有 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/)（128GB 記憶體），將 Ollama 安裝在 DGX Spark 上是非常實惠的選擇：可運行更大的模型、翻譯品質更好、推論速度更快，macOS 端透過 `--ollama-host` 指向即可。
+> **推薦硬體：** 如果有 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/)（128GB 記憶體），將 Ollama 安裝在 DGX Spark 上是非常實惠的選擇：可運行更大的模型、翻譯品質更好、推論速度更快，macOS 端透過 `--llm-host` 指向即可。
 
 > **不裝 LLM 也能翻譯：** 程式可切換為純本機 Argos 離線翻譯引擎，翻譯品質較 LLM 低但完全不需要額外伺服器。注意：摘要功能仍需 LLM 伺服器。
 
@@ -168,7 +168,7 @@ ollama pull qwen2.5:14b
 ./start.sh
 
 # CLI 模式（跳過選單）
-./start.sh --mode en2zh --engine ollama --ollama-model qwen2.5:14b
+./start.sh --mode en2zh --engine llm --llm-model qwen2.5:14b
 ```
 
 ### 離線處理音訊檔
@@ -197,6 +197,11 @@ ollama pull qwen2.5:14b
 | `Ctrl+C` | 停止轉錄 |
 | `Ctrl+S` | 停止並生成 AI 會議摘要 |
 
+> **注意：** Ctrl+S 摘要是以即時轉譯的文字記錄做摘要，不會重新處理錄音檔，也不包含講者辨識。即時模式僅處理系統音訊（對方聲音），無法涵蓋自己的發言。如需包含雙方聲音的完整逐字稿、講者辨識與摘要，請啟用錄音功能，事後用 `--input` 匯入錄音檔做完整處理：
+> ```bash
+> ./start.sh --input recordings/recording_20260304_143000.wav --diarize --summarize
+> ```
+
 ## 命令列參數
 
 | 參數 | 說明 | 預設值 |
@@ -204,9 +209,9 @@ ollama pull qwen2.5:14b
 | `--mode MODE` | 功能模式 (en2zh / zh2en / en / zh) | en2zh |
 | `--asr ASR` | AI 語音辨識引擎 (whisper / moonshine) | whisper |
 | `-m`, `--model MODEL` | Whisper 模型 | large-v3-turbo |
-| `--engine ENGINE` | 翻譯引擎 (ollama / argos) | ollama |
-| `--ollama-model MODEL` | LLM 翻譯模型 | qwen2.5:14b |
-| `--ollama-host HOST` | LLM 伺服器位址 | 192.168.1.40:11434 |
+| `--engine ENGINE` | 翻譯引擎 (llm / argos，llm 支援 Ollama 及 OpenAI 相容伺服器) | llm |
+| `--llm-model MODEL` | LLM 翻譯模型 | qwen2.5:14b |
+| `--llm-host HOST` | LLM 伺服器位址 | 192.168.1.40:11434 |
 | `--topic TOPIC` | 會議主題（提升翻譯品質） | |
 | `--summary-model MODEL` | 摘要用 LLM 模型 | qwen2.5:14b |
 | `--input FILE` | 離線處理音訊檔 | |

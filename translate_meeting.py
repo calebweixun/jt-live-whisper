@@ -1109,10 +1109,10 @@ def select_translator():
     if server_type == "ollama":
         for model_name in available_models:
             desc = next((d for n, d in OLLAMA_MODELS if n == model_name), "")
-            options.append((f"Ollama {model_name}", desc, "ollama", model_name))
+            options.append((f"Ollama {model_name}", desc, "llm", model_name))
     else:
         for model_name in available_models:
-            options.append((model_name, "", "ollama", model_name))
+            options.append((model_name, "", "llm", model_name))
     options.append(("Argos 本機離線", "品質普通，免網路", "argos", None))
 
     # 計算顯示寬度以對齊欄位
@@ -1147,7 +1147,7 @@ def select_translator():
 
     label, desc, engine, model = options[idx]
     print(f"  {C_OK}→ {label}{RESET}\n")
-    if engine == "ollama":
+    if engine == "llm":
         return engine, model, host, port, server_type
     else:
         return engine, None, None, None, None
@@ -3660,7 +3660,7 @@ def parse_args():
         ("./start.sh --mode zh", "中文轉錄模式"),
         ("./start.sh --asr moonshine", "使用 Moonshine 引擎"),
         ("./start.sh --topic 'ZFS 儲存管理'", "指定會議主題，提升翻譯品質"),
-        ("./start.sh -m large-v3-turbo -e ollama -d 0", "全部指定，跳過選單"),
+        ("./start.sh -m large-v3-turbo -e llm -d 0", "全部指定，跳過選單"),
         ("./start.sh --input meeting.mp3", "離線處理音訊檔（互動選單）"),
         ("./start.sh --input meeting.mp3 --mode en2zh", "離線處理（直接執行，跳過選單）"),
         ("./start.sh --input meeting.mp3 --mode en", "離線處理（純英文轉錄）"),
@@ -3706,13 +3706,13 @@ def parse_args():
         "-d", "--device", type=int, metavar="ID",
         help="音訊裝置 ID (數字，可用 --list-devices 查詢)")
     parser.add_argument(
-        "-e", "--engine", choices=["ollama", "argos"], metavar="ENGINE",
-        help="翻譯引擎 (ollama / argos，ollama 支援 Ollama 及 OpenAI 相容伺服器)")
+        "-e", "--engine", choices=["llm", "argos"], metavar="ENGINE",
+        help="翻譯引擎 (llm / argos，llm 支援 Ollama 及 OpenAI 相容伺服器)")
     parser.add_argument(
-        "--ollama-model", metavar="NAME",
+        "--llm-model", metavar="NAME", dest="ollama_model",
         help="LLM 翻譯模型名稱 (預設 qwen2.5:14b)")
     parser.add_argument(
-        "--ollama-host", metavar="HOST",
+        "--llm-host", metavar="HOST", dest="ollama_host",
         help=f"LLM 伺服器位址，自動偵測 Ollama 或 OpenAI 相容 (預設 {OLLAMA_HOST}:{OLLAMA_PORT})")
     parser.add_argument(
         "--list-devices", action="store_true",
@@ -3810,7 +3810,7 @@ def main():
             (mode, fw_model, ollama_model, summary_model,
              host, port, diarize, num_speakers, do_summarize,
              server_type) = _input_interactive_menu(args)
-            engine = "ollama"
+            engine = "llm"
             if not server_type:
                 server_type = "ollama"
         else:
@@ -3819,7 +3819,7 @@ def main():
             num_speakers = args.num_speakers
             do_summarize = args.summarize is not None
             fw_model = args.model or "large-v3-turbo"
-            engine = args.engine or "ollama"
+            engine = args.engine or "llm"
             ollama_model = args.ollama_model or "qwen2.5:14b"
             summary_model = args.summary_model
             host, port = _resolve_ollama_host(args)
@@ -3845,7 +3845,7 @@ def main():
 
         # 一開始就檢查 LLM 伺服器連線
         ollama_available = False
-        need_llm_translate = need_translate and engine == "ollama"
+        need_llm_translate = need_translate and engine == "llm"
         if need_llm_translate or do_summarize:
             if not server_type:
                 server_type = _detect_llm_server(host, port)
@@ -3869,11 +3869,11 @@ def main():
         translator = None
         can_summarize = ollama_available
         if need_translate:
-            if engine == "ollama" and ollama_available:
+            if engine == "llm" and ollama_available:
                 translator = OllamaTranslator(ollama_model, host, port, direction=mode,
                                               skip_check=True, server_type=server_type,
                                               meeting_topic=meeting_topic)
-            elif engine == "ollama" and not ollama_available:
+            elif engine == "llm" and not ollama_available:
                 # LLM 伺服器連不上：降級處理
                 if mode == "zh2en":
                     print(f"  {C_HIGHLIGHT}[警告] 中翻英不支援 Argos 離線翻譯，將只做中文轉錄（不翻譯）{RESET}")
@@ -4121,8 +4121,8 @@ def main():
             srv_type = _detect_llm_server(host, port) or "ollama"
             meeting_topic = args.topic if mode in ("en2zh", "zh2en") else None
             if mode == "en2zh":
-                engine = args.engine or "ollama"
-                if engine == "ollama":
+                engine = args.engine or "llm"
+                if engine == "llm":
                     ollama_model = args.ollama_model or "qwen2.5:14b"
                     translator = OllamaTranslator(ollama_model, host, port, direction=mode,
                                                   server_type=srv_type,
@@ -4171,8 +4171,8 @@ def main():
             host, port = _resolve_ollama_host(args)
             srv_type = _detect_llm_server(host, port) or "ollama"
             if mode in ("en2zh", "zh2en"):
-                engine = args.engine or "ollama"
-                if engine == "ollama":
+                engine = args.engine or "llm"
+                if engine == "llm":
                     ollama_model = args.ollama_model or "qwen2.5:14b"
                     translator = OllamaTranslator(ollama_model, host, port, direction=mode,
                                                   server_type=srv_type,
@@ -4217,7 +4217,7 @@ def main():
         if asr_engine == "moonshine" and mode == "en2zh":
             engine, model, host, port, srv_type = select_translator()
             meeting_topic = _ask_topic()
-            if engine == "ollama":
+            if engine == "llm":
                 translator = OllamaTranslator(model, host, port, direction=mode,
                                               server_type=srv_type,
                                               meeting_topic=meeting_topic)
@@ -4227,7 +4227,7 @@ def main():
         elif asr_engine == "whisper" and mode in ("en2zh", "zh2en"):
             engine, model, host, port, srv_type = select_translator()
             meeting_topic = _ask_topic()
-            if engine == "ollama":
+            if engine == "llm":
                 translator = OllamaTranslator(model, host, port, direction=mode,
                                               server_type=srv_type,
                                               meeting_topic=meeting_topic)
