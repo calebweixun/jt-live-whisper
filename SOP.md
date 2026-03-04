@@ -2,7 +2,7 @@
 
 **Author: Jason Cheng (Jason Tools)**
 
-將英文語音即時轉錄並翻譯成繁體中文字幕顯示於終端機。採用 macOS 系統音訊裝置層級擷取，**任何軟體的聲音輸出都能即時處理** -- 視訊會議（Zoom、Teams、Meet）、YouTube、Podcast、串流影片、教育訓練等，不限定特定應用程式。亦可離線處理音訊檔案。
+將英文語音即時轉錄並翻譯成繁體中文字幕顯示於終端機。採用 macOS 系統音訊裝置層級擷取，**理論上任何軟體的聲音輸出都能即時處理** -- 視訊會議（Zoom、Teams、Meet）、YouTube、Podcast、串流影片、教育訓練等，不限定特定應用程式。亦可離線處理音訊檔案。
 
 適用平台：macOS（Apple Silicon）
 

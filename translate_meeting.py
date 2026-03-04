@@ -58,6 +58,10 @@ C_ZH = "\x1b[38;2;80;255;180m"        # 青綠 - 中文翻譯
 C_OK = "\x1b[38;2;80;255;120m"        # 綠色 - 成功
 C_DIM = "\x1b[38;2;100;100;100m"      # 暗灰 - 次要資訊
 C_WHITE = "\x1b[38;2;255;255;255m"    # 白色 - 一般文字
+# 速度標籤（背景色 + 黑字，不用 REVERSE 以避免換行時色塊延伸）
+C_BADGE_FAST = "\x1b[48;2;80;255;120m\x1b[38;2;0;0;0m"    # 綠底黑字 < 1s
+C_BADGE_NORMAL = "\x1b[48;2;255;220;80m\x1b[38;2;0;0;0m"  # 黃底黑字 1-3s
+C_BADGE_SLOW = "\x1b[48;2;255;100;100m\x1b[38;2;0;0;0m"   # 紅底黑字 > 3s
 
 # 說話者辨識色彩（8 色循環，24-bit 真彩色）
 SPEAKER_COLORS = [
@@ -1558,11 +1562,11 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
         elapsed = time.monotonic() - t0
         if result:
             if elapsed < 1.0:
-                speed_color = C_OK
+                speed_badge = C_BADGE_FAST
             elif elapsed < 3.0:
-                speed_color = C_HIGHLIGHT
+                speed_badge = C_BADGE_NORMAL
             else:
-                speed_color = "\x1b[38;2;255;100;100m"
+                speed_badge = C_BADGE_SLOW
             if mode == "zh2en":
                 dst_color, dst_label = C_EN, "EN"
                 src_label = "中"
@@ -1570,7 +1574,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                 dst_color, dst_label = C_ZH, "中"
                 src_label = "EN"
             with print_lock:
-                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_color}{REVERSE} {elapsed:.1f}s {RESET}", flush=True)
+                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_badge} {elapsed:.1f}s {RESET}", flush=True)
                 print(flush=True)
                 _status_bar_state["count"] += 1
                 refresh_status_bar()
@@ -1821,11 +1825,11 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
         elapsed = time.monotonic() - t0
         if result:
             if elapsed < 1.0:
-                speed_color = C_OK
+                speed_badge = C_BADGE_FAST
             elif elapsed < 3.0:
-                speed_color = C_HIGHLIGHT
+                speed_badge = C_BADGE_NORMAL
             else:
-                speed_color = "\x1b[38;2;255;100;100m"
+                speed_badge = C_BADGE_SLOW
             if mode == "zh2en":
                 dst_color, dst_label = C_EN, "EN"
                 src_label = "中"
@@ -1834,7 +1838,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
                 src_label = "EN"
             with print_lock:
                 _clear_partial_line()  # 清除 [...] 部分文字
-                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_color}{REVERSE} {elapsed:.1f}s {RESET}", flush=True)
+                print(f"{dst_color}{BOLD}[{dst_label}] {result}{RESET}  {speed_badge} {elapsed:.1f}s {RESET}", flush=True)
                 print(flush=True)
                 _status_bar_state["count"] += 1
                 refresh_status_bar()
@@ -2817,13 +2821,13 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
 
                     if result:
                         if elapsed < 1.0:
-                            speed_color = C_OK
+                            speed_badge = C_BADGE_FAST
                         elif elapsed < 3.0:
-                            speed_color = C_HIGHLIGHT
+                            speed_badge = C_BADGE_NORMAL
                         else:
-                            speed_color = "\x1b[38;2;255;100;100m"
+                            speed_badge = C_BADGE_SLOW
                         print(f"{dst_color}{BOLD}{ts_tag} {spk_tag_term}[{dst_label}] {result}{RESET}  "
-                              f"{speed_color}{REVERSE} {elapsed:.1f}s {RESET}", flush=True)
+                              f"{speed_badge} {elapsed:.1f}s {RESET}", flush=True)
                         print(flush=True)
 
                         log_f.write(f"{ts_tag} {spk_tag_log}[{src_label}] {text}\n")
@@ -3363,7 +3367,10 @@ def main():
                     out_path, _ = summarize_log_file(lp, summary_model, host, port,
                                                        server_type=server_type)
                     if out_path:
-                        print(f"  {C_OK}摘要已儲存: {out_path}{RESET}")
+                        print(f"\n{C_DIM}{'═' * 60}{RESET}")
+                        print(f"  {C_OK}{BOLD}摘要已儲存（含重點摘要 + 校正逐字稿）{RESET}")
+                        print(f"  {C_WHITE}{out_path}{RESET}")
+                        print(f"{C_DIM}{'═' * 60}{RESET}")
                         open_file_in_editor(out_path)
                 except Exception as e:
                     print(f"  {C_HIGHLIGHT}[錯誤] 摘要失敗: {e}{RESET}")
