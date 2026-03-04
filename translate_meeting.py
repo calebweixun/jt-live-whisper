@@ -698,7 +698,7 @@ class OllamaTranslator:
             "規則：\n"
             "1. 必須使用繁體中文，禁止使用簡體中文（例：用「軟體」不用「软件」，用「記憶體」不用「内存」）\n"
             "2. 使用台灣用語：軟體、網路、記憶體、程式、伺服器、資料庫、影片、滑鼠、設定、訊息\n"
-            "3. 專有名詞維持英文原文（如 iPhone、API、Kubernetes、GitHub）\n"
+            "3. 專有名詞維持英文原文（如 iPhone、API、Kubernetes、GitHub）；人名維持英文原文（如 Tim Cook、Jensen Huang），除非是確定的知名中文人名才用中文（如 張忠謀、蔡崇信）\n"
             "4. 只輸出一行繁體中文翻譯，不要輸出原文、解釋、替代版本\n"
             "5. 只能包含繁體中文和英文，禁止輸出俄文、日文、韓文等其他語言\n"
         )
@@ -835,6 +835,35 @@ def _llm_list_models(host, port, server_type):
     return []
 
 
+def _colorize_summary_line(line):
+    """摘要 live output 的 markdown 著色"""
+    s = line.lstrip()
+    if s.startswith("## "):
+        return f"{C_TITLE}{BOLD}{line}{RESET}"
+    elif s.startswith("# "):
+        return f"{C_TITLE}{BOLD}{line}{RESET}"
+    elif s.startswith("- "):
+        return f"{C_OK}{line}{RESET}"
+    elif s.startswith("Speaker ") or s.startswith("**Speaker "):
+        return f"{C_HIGHLIGHT}{line}{RESET}"
+    elif s.startswith("---"):
+        return f"{C_DIM}{line}{RESET}"
+    else:
+        return f"{C_ZH}{line}{RESET}"
+
+
+def _live_output_line(line, write_lock):
+    """著色並輸出一行摘要文字"""
+    colored = _colorize_summary_line(line)
+    if write_lock:
+        with write_lock:
+            sys.stdout.write(colored + "\n")
+            sys.stdout.flush()
+    else:
+        sys.stdout.write(colored + "\n")
+        sys.stdout.flush()
+
+
 def _llm_generate(prompt, model, host, port, server_type, stream=False,
                   timeout=30, spinner=None, live_output=False):
     """統一 LLM 生成介面，支援 Ollama 原生 API 和 OpenAI 相容 API"""
@@ -873,6 +902,7 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
     # 串流模式
     response_text = ""
     token_count = 0
+    line_buf = ""  # live_output 行緩衝（用於 markdown 著色）
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         if server_type == "openai":
             # SSE 格式：data: {...}\n\n
@@ -899,13 +929,10 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
                     if spinner:
                         spinner.update_tokens(token_count)
                     if live_output:
-                        if write_lock:
-                            with write_lock:
-                                sys.stdout.write(token)
-                                sys.stdout.flush()
-                        else:
-                            sys.stdout.write(token)
-                            sys.stdout.flush()
+                        line_buf += token
+                        while "\n" in line_buf:
+                            out_line, line_buf = line_buf.split("\n", 1)
+                            _live_output_line(out_line, write_lock)
                 # 檢查 finish_reason
                 if choices[0].get("finish_reason"):
                     break
@@ -926,15 +953,15 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
                     if spinner:
                         spinner.update_tokens(token_count)
                     if live_output:
-                        if write_lock:
-                            with write_lock:
-                                sys.stdout.write(token)
-                                sys.stdout.flush()
-                        else:
-                            sys.stdout.write(token)
-                            sys.stdout.flush()
+                        line_buf += token
+                        while "\n" in line_buf:
+                            out_line, line_buf = line_buf.split("\n", 1)
+                            _live_output_line(out_line, write_lock)
                 if chunk.get("done", False):
                     break
+    # 輸出殘餘緩衝
+    if live_output and line_buf.strip():
+        _live_output_line(line_buf, write_lock)
     return response_text.strip()
 
 
@@ -2130,6 +2157,7 @@ class _SummaryStatusBar:
         self._frozen_time = ""
         self._frozen_stats = ""
         self._progress_text = ""  # 自訂進度文字（取代「等待模型回應」）
+        self._last_rows = 0       # 追蹤上一次 terminal 高度，用於清除舊狀態列
 
     def start(self):
         self._stop.clear()
@@ -2140,9 +2168,10 @@ class _SummaryStatusBar:
         # 設定 scroll region，保留最後一行給狀態列
         try:
             cols, rows = os.get_terminal_size()
-            sys.stdout.write(f"\x1b7")                    # 儲存游標位置
-            sys.stdout.write(f"\x1b[1;{rows - 1}r")       # scroll region
-            sys.stdout.write(f"\x1b8")                     # 還原游標位置（不強制跳行）
+            self._last_rows = rows
+            sys.stdout.write(f"\x1b[1;{rows - 1}r")       # scroll region（游標會跳到 1,1）
+            sys.stdout.write(f"\x1b[{rows - 1};1H")        # 移到 scroll region 底部
+            sys.stdout.write(f"\n")                         # 換行推開既有內容，游標留在空行
             sys.stdout.flush()
             self._active = True
         except Exception:
@@ -2194,10 +2223,14 @@ class _SummaryStatusBar:
                 self._needs_resize = False
                 try:
                     cols, rows = os.get_terminal_size()
+                    old_rows = self._last_rows
+                    self._last_rows = rows
                     with self._lock:
-                        sys.stdout.write(f"\x1b7")
-                        sys.stdout.write(f"\x1b[1;{rows - 1}r")
-                        sys.stdout.write(f"\x1b8")
+                        # 清除舊狀態列殘留（terminal 變大時舊 bar 會留在畫面中間）
+                        clean = ""
+                        if old_rows and old_rows != rows and old_rows <= rows:
+                            clean = f"\x1b7\x1b[{old_rows};1H\x1b[2K\x1b8"
+                        sys.stdout.write(f"{clean}\x1b7\x1b[1;{rows - 1}r\x1b8")
                         sys.stdout.flush()
                 except Exception:
                     pass
@@ -2236,7 +2269,6 @@ class _SummaryStatusBar:
             # 計算顯示寬度（CJK + 全形標點都算 2 格）
             dw = 0
             for c in status:
-                cp = ord(c)
                 if ('\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u303f'
                         or '\uff00' <= c <= '\uffef' or '\u3400' <= c <= '\u4dbf'):
                     dw += 2
@@ -2244,7 +2276,7 @@ class _SummaryStatusBar:
                     dw += 1
             padding = " " * max(0, cols - dw)
 
-            # 單次寫入避免與 live output 交錯
+            # 不碰 scroll region，純粹 save cursor → 畫 bar → restore cursor
             buf = (f"\x1b7\x1b[{rows};1H\x1b[2K"
                    f"\x1b[48;2;60;60;60m\x1b[38;2;200;200;200m{status}{padding}\x1b[0m"
                    f"\x1b8")
@@ -2877,6 +2909,7 @@ def summarize_log_file(input_path, model, host, port, server_type="ollama"):
 
     # 檢查是否需要分段摘要
     chunks = _split_transcript_chunks(transcript, max_chars)
+    print()  # 空行，與下方摘要內容做視覺區隔
 
     sbar = _SummaryStatusBar(model=model, task="準備中").start()
 
@@ -3418,6 +3451,7 @@ def main():
             # 啟動摘要狀態列
             combined_transcript = combined_transcript.strip()
             chunks = _split_transcript_chunks(combined_transcript, max_chars)
+            print()  # 空行，與下方摘要內容做視覺區隔
             sbar = _SummaryStatusBar(model=model, task="準備中").start()
 
             if len(chunks) <= 1:

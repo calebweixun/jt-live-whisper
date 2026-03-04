@@ -2,7 +2,7 @@
 
 **100% 全地端 AI 語音工具集** -- 即時轉錄、即時翻譯、說話者辨識、會議摘要，所有 AI 模型皆在自有設備上運行，資料不經過任何雲端服務。
 
-核心功能涵蓋即時語音轉錄、英中/中英即時翻譯字幕、離線音訊檔批次處理、AI 說話者辨識（Speaker Diarization）、以及 LLM 會議摘要產出。所有 AI 推論皆由地端模型完成，全程不經過第三方雲端 API。
+核心功能涵蓋即時語音轉錄、英中/中英即時翻譯字幕、離線音訊檔批次處理、AI 說話者辨識（Speaker Diarization）、以及 LLM 會議摘要產出。採用 macOS 系統音訊裝置層級擷取，**任何軟體的聲音輸出都能即時處理** -- 視訊會議（Zoom、Teams、Meet）、YouTube、Podcast、串流影片等，不限定特定應用程式。所有 AI 推論皆由地端模型完成，全程不經過第三方雲端 API。
 
 Author: Jason Cheng ([Jason Tools](https://jasoncheng.com.tw))
 
@@ -13,6 +13,7 @@ Author: Jason Cheng ([Jason Tools](https://jasoncheng.com.tw))
 - **完全地端運行** -- 語音辨識、翻譯、說話者辨識、摘要全部使用自有設備上的 AI 模型，無需雲端 API Key、不上傳任何資料至第三方
 - **隱私安全** -- 會議內容、語音資料全程留在自有設備，適合企業內部會議、機密討論
 - **零成本** -- 不需要付費的雲端 API（OpenAI、Google 等），所有 AI 模型皆為自由開源
+- **不限應用程式** -- 採用系統音訊裝置層級擷取，任何軟體的聲音輸出都能處理（Zoom、Teams、Meet、YouTube、Podcast 等）
 - **功能完整** -- 從即時轉錄翻譯、離線音訊處理、說話者辨識到 AI 摘要，一套搞定
 - **一鍵安裝** -- 安裝腳本自動下載並編譯所有 AI 模型和相依套件
 
@@ -51,14 +52,14 @@ Author: Jason Cheng ([Jason Tools](https://jasoncheng.com.tw))
 ### 4. AI 會議摘要
 即時按 Ctrl+S 或批次對記錄檔生成摘要，透過本地端 LLM 產出重點整理 + 校正逐字稿。
 
-<<待放擷圖：AI 會議摘要產出畫面>>
+![AI 會議摘要產出畫面](images/summary-output.png)
 
 ### 5. 多模式語音轉錄
 4 種功能模式 -- 英翻中 / 中翻英 / 純英文轉錄 / 純中文轉錄，滿足各種使用場景。
 
 ## 其他特色
 
-- **多種本地端 AI 語音辨識引擎** -- Whisper（高準確度）/ Moonshine（低延遲 ~300ms）/ faster-whisper（離線處理）
+- **多種本地端 AI 語音辨識引擎** -- 即時辨識：Whisper（高準確度）/ Moonshine（超低延遲 ~300ms）；離線音訊檔轉錄：faster-whisper（支援 VAD 靜音過濾）
 - **多種本地端翻譯引擎** -- LLM 大型語言模型（Ollama / OpenAI 相容伺服器）或 Argos 離線翻譯
 - **自動偵測 LLM 伺服器** -- 支援 Ollama、LM Studio、Jan.ai、vLLM、LocalAI、llama.cpp、LiteLLM 等本地端 LLM 伺服器
 - **互動式選單 + CLI 模式** -- 新手友善的選單介面，進階用戶可用命令列參數直接啟動
@@ -69,7 +70,7 @@ Author: Jason Cheng ([Jason Tools](https://jasoncheng.com.tw))
 - Python 3.12+
 - Homebrew
 - [BlackHole 2ch](https://existential.audio/blackhole/)（虛擬音訊驅動，安裝腳本會自動安裝）
-- 本地端 LLM 伺服器（推薦 [Ollama](https://ollama.com/)，翻譯/摘要用，可選配 Argos 離線替代。推薦搭配 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/) 運行 Ollama，CP 值高）
+- 本地端 LLM 伺服器（推薦 [Ollama](https://ollama.com/)，翻譯/摘要用。推薦搭配 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/) 運行 Ollama，CP 值高。**沒有 LLM 伺服器也能用** -- 程式可切換為純本機 Argos 離線翻譯引擎，完全不需額外伺服器，但摘要功能需要 LLM）
 
 ## 快速開始
 
@@ -94,6 +95,21 @@ cd jt-live-whisper && ./install.sh
 
 ### 3. 設定 macOS 音訊
 
+BlackHole 2ch 是虛擬音訊裝置，搭配 macOS「多重輸出裝置」將系統音訊同時送給你的耳機/喇叭和本程式：
+
+```
+任何應用程式的聲音（Zoom / Teams / Meet / YouTube / Podcast ...）
+  │
+  ▼
+macOS 多重輸出裝置（你建立的）
+  ├──▶ MacBook 揚聲器 / AirPods / 耳機（你照常聽到聲音）
+  └──▶ BlackHole 2ch（虛擬音訊裝置，無聲複製一份）
+         │
+         ▼
+    jt-live-whisper 讀取 BlackHole 音訊
+      → AI 語音辨識 → 翻譯 → 終端機即時字幕
+```
+
 安裝 BlackHole 後需要**重新啟動電腦**，然後設定多重輸出裝置：
 
 1. 開啟「音訊 MIDI 設定」（Audio MIDI Setup）
@@ -115,7 +131,7 @@ ollama pull qwen2.5:14b
 
 > **推薦硬體：** 如果有 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/)（128GB 記憶體），將 Ollama 安裝在 DGX Spark 上是非常實惠的選擇 -- 可運行更大的模型、翻譯品質更好、推論速度更快，macOS 端透過 `--ollama-host` 指向即可。
 
-> 如果不安裝 LLM，程式會自動降級使用 Argos 離線翻譯（品質較低但完全不需要額外服務）
+> **不裝 LLM 也能翻譯：** 程式可切換為純本機 Argos 離線翻譯引擎，翻譯品質較 LLM 低但完全不需要額外伺服器。注意：摘要功能仍需 LLM 伺服器。
 
 ### 5. 啟動
 
@@ -129,7 +145,7 @@ ollama pull qwen2.5:14b
 
 ## 使用方式
 
-### 即時模式（預設）
+### 即時模式（預設，邊聽邊轉）
 
 ```bash
 # 互動式選單
