@@ -17,7 +17,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${C_TITLE}============================================================${NC}"
-echo -e "${C_TITLE}${BOLD}  jt-live-whisper v1.8.3 - 即時英翻中字幕系統${NC}"
+echo -e "${C_TITLE}${BOLD}  jt-live-whisper v1.9.4 - 即時英翻中字幕系統${NC}"
 echo -e "${C_TITLE}  by Jason Cheng (Jason Tools)${NC}"
 echo -e "${C_TITLE}============================================================${NC}"
 echo ""

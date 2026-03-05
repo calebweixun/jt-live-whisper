@@ -1,4 +1,4 @@
-# jt-live-whisper v1.8.3
+# jt-live-whisper v1.9.4
 
 **100% 全地端 AI 語音工具集**：即時轉錄、即時翻譯、錄音檔批次處理、講者辨識、會議摘要，所有 AI 模型皆在自有設備上運行，資料不經過任何雲端服務。
 
@@ -23,12 +23,12 @@ Author: Jason Cheng (Jason Tools)
 
 | 用途 | AI 模型 | 說明 |
 |------|---------|------|
-| 語音辨識 (ASR) | **Whisper** (OpenAI) | 開源語音辨識模型，支援中英文，本地端 whisper.cpp 執行 |
-| 語音辨識 (ASR) | **Moonshine** (Useful Sensors) | 超低延遲串流辨識模型，英文專用 |
-| 語音辨識 (離線) | **faster-whisper** (CTranslate2) | 離線音訊檔處理，支援 VAD 靜音過濾 |
+| 語音辨識 (ASR) | **Whisper** (OpenAI) | 開源語音辨識模型，支援中英文，本地端 whisper.cpp 或遠端 GPU 伺服器執行 |
+| 語音辨識 (ASR) | **Moonshine** (Useful Sensors) | 超低延遲串流辨識模型，英文專用（僅限本機） |
+| 語音辨識 (離線) | **faster-whisper** (CTranslate2) | 離線音訊檔處理，支援 VAD 靜音過濾，可在本機或遠端 GPU 伺服器執行 |
 | 翻譯 / 摘要 | **Qwen 2.5** / **Phi-4** / **GPT-OSS** 等 LLM | 透過地端 Ollama 或其他 LLM 伺服器運行（本機或區域網路） |
 | 翻譯 (離線備援) | **Argos Translate** | 完全離線的輕量翻譯模型，不需 LLM 伺服器 |
-| 講者辨識 | **resemblyzer** + **spectralcluster** | 聲紋特徵提取 + Google 頻譜分群演算法 |
+| 講者辨識 | **resemblyzer** + **spectralcluster** | 聲紋特徵提取 + Google 頻譜分群演算法，可在本機或遠端 GPU 伺服器執行 |
 
 所有模型皆在自有設備上推論（本機或區域網路內的 GPU 伺服器），**不需要任何第三方雲端 API**。
 
@@ -38,6 +38,8 @@ Author: Jason Cheng (Jason Tools)
 擷取 macOS 系統音訊，本地端 AI 即時辨識語音並翻譯成繁體中文字幕顯示於終端機。開會、看影片、聽 Podcast 即時翻譯。
 
 ![即時英翻中字幕畫面](images/realtime-en2zh-2.png)
+
+![即時英翻中：翻譯速度標籤與音訊波形](images/realtime-en2zh-3.png)
 
 ### 2. 離線音訊檔批次處理
 支援 mp3 / wav / m4a / flac 等格式，使用 faster-whisper AI 模型進行離線轉錄翻譯，適合會後補做逐字稿。
