@@ -1,4 +1,4 @@
-# jt-live-whisper - 即時英翻中字幕系統 v1.7.8 (by Jason Cheng) - 安裝與使用 SOP
+# jt-live-whisper - 即時英翻中字幕系統 v1.8.3 (by Jason Cheng) - 安裝與使用 SOP
 
 **Author: Jason Cheng (Jason Tools)**
 
