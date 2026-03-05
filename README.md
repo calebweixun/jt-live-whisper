@@ -26,7 +26,7 @@ Author: Jason Cheng (Jason Tools)
 | 語音辨識 (ASR) | **Whisper** (OpenAI) | 開源語音辨識模型，支援中英文，本地端 whisper.cpp 執行 |
 | 語音辨識 (ASR) | **Moonshine** (Useful Sensors) | 超低延遲串流辨識模型，英文專用 |
 | 語音辨識 (離線) | **faster-whisper** (CTranslate2) | 離線音訊檔處理，支援 VAD 靜音過濾 |
-| 翻譯 / 摘要 | **Qwen 2.5** / **Phi-4** 等 LLM | 透過地端 Ollama 或其他 LLM 伺服器運行（本機或區域網路） |
+| 翻譯 / 摘要 | **Qwen 2.5** / **Phi-4** / **GPT-OSS** 等 LLM | 透過地端 Ollama 或其他 LLM 伺服器運行（本機或區域網路） |
 | 翻譯 (離線備援) | **Argos Translate** | 完全離線的輕量翻譯模型，不需 LLM 伺服器 |
 | 講者辨識 | **resemblyzer** + **spectralcluster** | 聲紋特徵提取 + Google 頻譜分群演算法 |
 
@@ -73,7 +73,7 @@ Author: Jason Cheng (Jason Tools)
 
 - macOS（Apple Silicon）
 - Python 3.12+
-- Homebrew
+- [Homebrew](https://brew.sh/)（需事先安裝）
 - [BlackHole 2ch](https://existential.audio/blackhole/)（虛擬音訊驅動，安裝腳本會自動安裝）
 - 本地端 LLM 伺服器（推薦 [Ollama](https://ollama.com/)，翻譯/摘要用。推薦搭配 [NVIDIA DGX Spark](https://www.nvidia.com/zh-tw/products/workstations/dgx-spark/) 運行 Ollama，CP 值高。**沒有 LLM 伺服器也能用**：程式可切換為純本機 Argos 離線翻譯引擎，完全不需額外伺服器，但摘要功能需要 LLM）
 
