@@ -1,4 +1,4 @@
-# jt-live-whisper v2.1.0
+# jt-live-whisper v2.1.1
 
 **100% 全地端 AI 語音工具集**：即時轉錄、即時翻譯、錄音檔批次處理、講者辨識、會議摘要，所有 AI 模型皆在自有設備上運行，資料不經過任何雲端服務。
 
@@ -36,7 +36,7 @@ Author: Jason Cheng (Jason Tools)
 
 ## 兩種部署方式
 
-- **單機模式**： 一台 MacBook / Mac mini 即可完成所有處理。語音辨識（Whisper/Moonshine）、翻譯（LLM/Argos）全部在本機 CPU 執行，不需要額外硬體。適合個人使用、外出攜帶。
+- **單機模式**： 一台 MacBook / Mac mini 即可完成所有處理。語音辨識（Whisper/Moonshine）、翻譯（LLM/Argos）全部在本機執行，不需要額外硬體。適合個人使用、外出攜帶。
 
 - **本機 + GPU 伺服器模式**： MacBook / Mac mini 負責音訊擷取與介面操作，語音辨識和講者辨識交由區域網路內的 GPU 伺服器（如 DGX Spark、Ubuntu + NVIDIA GPU）處理。離線辨識速度快 5-10 倍，仍然是全地端架構，資料僅在區域網路內傳輸。適合需要處理大量音訊或追求即時辨識品質的場景。
 

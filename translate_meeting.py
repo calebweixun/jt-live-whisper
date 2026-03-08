@@ -237,7 +237,7 @@ ASR_ENGINES = [
     ("moonshine", "Moonshine", "真串流，低延遲，僅英文"),
 ]
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.1"
 
 # 常見 LLM 伺服器預設 port（供參考）
 LLM_PRESETS = [
@@ -253,7 +253,7 @@ LLM_PRESETS = [
 SUMMARY_DEFAULT_MODEL = "gpt-oss:120b"
 _BUILTIN_SUMMARY_MODELS = [
     ("gpt-oss:120b", "品質最好（推薦）"),
-    ("gpt-oss:20b", "速度快，品質好"),
+    ("gpt-oss:20b", "速度快，品質一般"),
 ]
 
 # 合併使用者自訂摘要模型（config.json 的 summary_models）
@@ -1478,7 +1478,7 @@ def _check_remote_before_upload(rw_cfg, file_size_bytes=0):
         print()
         print(f"  {C_DIM}[1]{RESET} {C_WHITE}等候（每 5 秒重試）{RESET}")
         print(f"  {C_DIM}[2]{RESET} {C_WHITE}強制中斷遠端作業（可能是殘留的已斷線作業）{RESET}")
-        print(f"  {C_DIM}[3]{RESET} {C_WHITE}改用本機 CPU 辨識{RESET}")
+        print(f"  {C_DIM}[3]{RESET} {C_WHITE}改用本機 辨識{RESET}")
         print(f"{C_WHITE}選擇 (1-3) [1]：{RESET}", end=" ")
 
         try:
@@ -1499,7 +1499,7 @@ def _check_remote_before_upload(rw_cfg, file_size_bytes=0):
                 print(f" {C_HIGHLIGHT}重啟失敗{RESET}")
                 return False
         elif choice == "3":
-            print(f"  {C_OK}→ 改用本機 CPU 辨識{RESET}")
+            print(f"  {C_OK}→ 改用本機 辨識{RESET}")
             return False
         else:
             # 等候
@@ -2185,12 +2185,12 @@ def _input_interactive_menu(args):
             rw_host = REMOTE_WHISPER_CONFIG.get("host", "?")
             location_options = [
                 (f"遠端 GPU（{rw_host}，速度快 5-10 倍）", ""),
-                ("本機 CPU", ""),
+                ("本機", ""),
             ]
             default_loc = 0
         else:
             location_options = [
-                ("本機 CPU", ""),
+                ("本機", ""),
                 ("遠端 GPU（尚未設定）", ""),
             ]
             default_loc = 0
@@ -2227,7 +2227,7 @@ def _input_interactive_menu(args):
             # 沒設定時選了遠端 → 提示並降級
             if loc_idx == 1:
                 print(f"  {C_HIGHLIGHT}[提示] 遠端 GPU 辨識尚未設定，請執行 ./install.sh 進行設定{RESET}")
-                print(f"  {C_DIM}本次將使用本機 CPU 辨識{RESET}")
+                print(f"  {C_DIM}本次將使用本機 辨識{RESET}")
             use_remote_whisper = False
 
         # ── 第三步：LLM 伺服器 + 翻譯模型（僅翻譯模式）──
@@ -2429,25 +2429,46 @@ def _input_interactive_menu(args):
                     print(f"{C_HIGHLIGHT}未偵測到 LLM 伺服器（{ollama_host}:{ollama_port}）{RESET}")
                     print(f"  {C_HIGHLIGHT}⚠ 摘要功能需要 LLM 伺服器，請確認伺服器已啟動{RESET}")
 
-            # 摘要模型
-            if llm_server_type == "ollama":
+            # 摘要模型：列出伺服器上所有模型
+            all_summary_models = _llm_list_models(ollama_host, ollama_port, llm_server_type or "ollama")
+            summary_models_list = []
+            for m_name in all_summary_models:
+                desc = next((d for n, d in SUMMARY_MODELS if n == m_name), "")
+                summary_models_list.append((m_name, desc))
+            if not summary_models_list:
                 summary_models_list = [(n, d) for n, d in SUMMARY_MODELS]
-            elif llm_server_type == "openai":
-                summary_models_list = [(m, "") for m in _llm_list_models(ollama_host, ollama_port, llm_server_type)]
-            else:
-                summary_models_list = [(n, d) for n, d in SUMMARY_MODELS]
-                llm_server_type = "ollama"  # 預設假設 Ollama，實際連線時再偵測
 
+            _last_summary = _config.get("last_summary_model")
             default_sm = 0
+            for i, (name, _) in enumerate(summary_models_list):
+                if name == SUMMARY_DEFAULT_MODEL:
+                    default_sm = i
+                    break
+
+            def _dw_sm(s):
+                return sum(2 if '\u4e00' <= c <= '\u9fff' else 1 for c in s)
+
+            col = max(_dw_sm(name) for name, _ in summary_models_list) + 2
             print(f"\n\n{C_TITLE}{BOLD}▎ 摘要模型{RESET}")
             print(f"{C_DIM}{'─' * 60}{RESET}")
-            col = max(len(name) for name, _ in summary_models_list) + 2
             for i, (name, desc) in enumerate(summary_models_list):
-                padded = name + ' ' * (col - len(name))
+                padded = name + ' ' * (col - _dw_sm(name))
+                tags = []
                 if i == default_sm:
-                    print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+                    tags.append(f"{C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+                if name == _last_summary:
+                    tags.append(f"{C_OK}{REVERSE} 前次使用 {RESET}")
+                tag_str = " ".join(tags)
+                if i == default_sm:
+                    print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {tag_str}")
                 else:
-                    print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}")
+                    print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}  {tag_str}")
+            # 檢查推薦摘要模型是否存在於伺服器
+            _rec_sm = {n for n, _ in _BUILTIN_SUMMARY_MODELS}
+            _avail_sm = {n for n, _ in summary_models_list}
+            if not _rec_sm & _avail_sm:
+                _rec_sm_list = " / ".join(n for n, _ in _BUILTIN_SUMMARY_MODELS)
+                print(f"  {C_HIGHLIGHT}注意：本 LLM 伺服器未安裝推薦摘要模型（{_rec_sm_list}），摘要品質可能不如預期{RESET}")
             print(f"{C_DIM}{'─' * 60}{RESET}")
             print(f"{C_WHITE}按 Enter 使用預設，或輸入編號：{RESET}", end=" ")
 
@@ -2462,6 +2483,10 @@ def _input_interactive_menu(args):
             else:
                 sm_idx = default_sm
             summary_model = summary_models_list[sm_idx][0]
+            # 記住本次使用的摘要模型
+            if summary_model != _config.get("last_summary_model"):
+                _config["last_summary_model"] = summary_model
+                save_config(_config)
 
         # 記住 LLM 伺服器位址（如果有改）
         if ollama_host != OLLAMA_HOST or ollama_port != OLLAMA_PORT:
@@ -2511,7 +2536,7 @@ def _input_interactive_menu(args):
             rw_h2 = REMOTE_WHISPER_CONFIG.get("host", "?")
             diarize_desc += f"，遠端 GPU（{rw_h2}）"
         elif diarize_desc != "關閉":
-            diarize_desc += "，本機 CPU"
+            diarize_desc += "，本機"
         print(f"  {C_OK}  講者辨識: {diarize_desc}{RESET}")
         if do_summarize:
             print(f"  {C_OK}  摘要模型: {summary_model}{RESET}  {C_DIM}@ {ollama_host}:{ollama_port}{RESET}")
@@ -2598,7 +2623,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
     print(f"{C_TITLE}{'=' * 60}{RESET}")
     print(f"{C_TITLE}{BOLD}  {APP_NAME}{RESET}")
     print(f"{C_TITLE}  {APP_AUTHOR}{RESET}")
-    print(f"  {C_OK}ASR 引擎: Whisper ({model_name}) @ 本機 CPU{RESET}")
+    print(f"  {C_OK}ASR 引擎: Whisper ({model_name}) @ 本機{RESET}")
     if translator:
         if isinstance(translator, OllamaTranslator):
             _srv_type_label = "Ollama" if translator.server_type == "ollama" else "OpenAI 相容"
@@ -5262,7 +5287,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
     if probe and probe[0] > 0:
         audio_duration = probe[0]
 
-    # 3. 辨識：遠端 GPU 或本機 CPU
+    # 3. 辨識：遠端 GPU 或本機
     t_stage = time.monotonic()
     used_remote = False
     raw_segments = None  # 遠端回傳的 segments list
@@ -5275,7 +5300,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
         # 上傳前檢查遠端狀態（忙碌/磁碟空間）
         file_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
         if not _check_remote_before_upload(remote_whisper_cfg, file_size):
-            print(f"  {C_HIGHLIGHT}[降級] 改用本機 CPU 辨識{RESET}")
+            print(f"  {C_HIGHLIGHT}[降級] 改用本機 辨識{RESET}")
             remote_whisper_cfg = None
 
     if remote_whisper_cfg is not None:
@@ -5306,7 +5331,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
             sbar.freeze()
             sbar.stop()
             print(f"  {C_HIGHLIGHT}[降級] 遠端辨識失敗: {e}{RESET}")
-            print(f"  {C_HIGHLIGHT}[降級] 改用本機 CPU 辨識{RESET}")
+            print(f"  {C_HIGHLIGHT}[降級] 改用本機 辨識{RESET}")
             remote_whisper_cfg = None  # fallback
 
     if not used_remote:
@@ -5490,7 +5515,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
         _meta = {
             "asr_engine": "faster-whisper",
             "asr_model": model_size,
-            "asr_location": "遠端 GPU" if used_remote else "本機 CPU",
+            "asr_location": "遠端 GPU" if used_remote else "本機",
             "input_file": os.path.basename(input_path),
         }
         if diarize:
@@ -5499,7 +5524,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
             if remote_whisper_cfg is not None:
                 _meta["diarize_location"] = "遠端 GPU"
             else:
-                _meta["diarize_location"] = "本機 CPU"
+                _meta["diarize_location"] = "本機"
             if num_speakers:
                 _meta["num_speakers"] = num_speakers
             # 從 segments_data 計算實際辨識出的講者數
@@ -5694,7 +5719,7 @@ def summarize_log_file(input_path, model, host, port, server_type="ollama",
     chunks = _split_transcript_chunks(transcript, max_chars)
     print()  # 空行，與下方摘要內容做視覺區隔
 
-    _llm_loc = "本機" if host in ("localhost", "127.0.0.1", "::1") else "遠端"
+    _llm_loc = "本機" if host in ("localhost", "127.0.0.1", "::1") else "伺服器"
     sbar = _SummaryStatusBar(model=model, task="準備中", location=_llm_loc).start()
 
     if len(chunks) <= 1:
@@ -6804,7 +6829,7 @@ def parse_args():
         ("./start.sh --input meeting.mp3 --diarize --num-speakers 3", "指定 3 位講者"),
         ("./start.sh --input meeting.mp3 --diarize --summarize", "辨識 + 翻譯 + 摘要"),
         ("./start.sh --input m.mp3 --diarize --mode zh --summarize", "中文辨識 + 講者 + 摘要"),
-        ("./start.sh --input meeting.mp3 --local-asr", "強制本機 CPU 辨識"),
+        ("./start.sh --input meeting.mp3 --local-asr", "強制本機 辨識"),
         ("./start.sh --summarize log1.txt log2.txt", "批次摘要記錄檔"),
     ]
     col = max(len(cmd) for cmd, _ in examples) + 3
@@ -6874,7 +6899,7 @@ def parse_args():
         help="指定講者人數（預設自動偵測 2~8，需搭配 --diarize）")
     parser.add_argument(
         "--local-asr", action="store_true",
-        help="強制使用本機 CPU 辨識（忽略遠端 GPU 設定，即時模式與離線模式皆適用）")
+        help="強制使用本機 辨識（忽略遠端 GPU 設定，即時模式與離線模式皆適用）")
     parser.add_argument(
         "--restart-server", action="store_true",
         help="強制重啟遠端 GPU 伺服器（更新 server.py 後使用）")
@@ -7205,7 +7230,7 @@ def main():
                 remote_whisper_cfg = rw_cfg
             else:
                 print(f"{C_HIGHLIGHT}✗ 無法連接{RESET}")
-                print(f"  {C_HIGHLIGHT}[降級] 改用本機 CPU 辨識{RESET}")
+                print(f"  {C_HIGHLIGHT}[降級] 改用本機 辨識{RESET}")
 
         # 顯示設定資訊
         print(f"\n\n{C_TITLE}{BOLD}▎ 設定總覽{RESET}")
@@ -7216,7 +7241,7 @@ def main():
             rw_h = remote_whisper_cfg.get("host", "?")
             print(f"  {C_WHITE}辨識位置    遠端 GPU（{rw_h}）{RESET}")
         else:
-            print(f"  {C_WHITE}辨識位置    本機 CPU{RESET}")
+            print(f"  {C_WHITE}辨識位置    本機{RESET}")
         if need_translate:
             if engine == "argos":
                 print(f"  {C_WHITE}翻譯模型    Argos 本機離線{RESET}")
@@ -7228,7 +7253,7 @@ def main():
             if remote_whisper_cfg:
                 sp_info += f"，遠端 GPU（{remote_whisper_cfg.get('host', '?')}）"
             else:
-                sp_info += "，本機 CPU"
+                sp_info += "，本機"
             sp_info += f"，{num_speakers} 人" if num_speakers else "，自動偵測"
             print(f"  {C_WHITE}講者辨識    {sp_info}{RESET}")
         if do_summarize and host:
@@ -7286,10 +7311,10 @@ def main():
                 _meta = {
                     "asr_engine": remote_whisper_cfg.get("_backend", "faster-whisper") if remote_whisper_cfg else "faster-whisper",
                     "asr_model": fw_model,
-                    "asr_location": f"遠端 GPU ({remote_whisper_cfg.get('host', '?')})" if remote_whisper_cfg else "本機 CPU",
+                    "asr_location": f"遠端 GPU ({remote_whisper_cfg.get('host', '?')})" if remote_whisper_cfg else "本機",
                     "diarize": diarize,
                     "diarize_engine": "resemblyzer + spectralcluster" if diarize else None,
-                    "diarize_location": f"遠端 GPU ({remote_whisper_cfg.get('host', '?')})" if diarize and remote_whisper_cfg else ("本機 CPU" if diarize else None),
+                    "diarize_location": f"遠端 GPU ({remote_whisper_cfg.get('host', '?')})" if diarize and remote_whisper_cfg else ("本機" if diarize else None),
                     "num_speakers": num_speakers if num_speakers else "自動偵測",
                     "translate_model": ollama_model if need_translate and ollama_available else None,
                     "translate_server": f"{srv_label} @ {host}:{port}" if need_translate and ollama_available else None,
@@ -7431,7 +7456,7 @@ def main():
             combined_transcript = combined_transcript.strip()
             chunks = _split_transcript_chunks(combined_transcript, max_chars)
             print()  # 空行，與下方摘要內容做視覺區隔
-            _llm_loc = "本機" if host in ("localhost", "127.0.0.1", "::1") else "遠端"
+            _llm_loc = "本機" if host in ("localhost", "127.0.0.1", "::1") else "伺服器"
             sbar = _SummaryStatusBar(model=model, task="準備中", location=_llm_loc).start()
 
             _batch_topic = getattr(args, 'topic', None)
