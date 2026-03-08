@@ -237,7 +237,7 @@ ASR_ENGINES = [
     ("moonshine", "Moonshine", "真串流，低延遲，僅英文"),
 ]
 
-APP_VERSION = "2.0.9"
+APP_VERSION = "2.1.0"
 
 # 常見 LLM 伺服器預設 port（供參考）
 LLM_PRESETS = [
@@ -947,6 +947,7 @@ class OllamaTranslator:
             "5. 只能包含繁體中文和英文，禁止輸出俄文、日文、韓文等其他語言\n"
             "6. 禁止添加任何評論、括號註解、翻譯說明（如「此句不完整」「無法翻譯」「有誤」等）\n"
             "7. 即使原文不完整或語意不清，也直接逐字翻譯，不要跳過或加說明\n"
+            "8. 直接輸出翻譯結果，不要使用 <think> 標籤或任何思考過程\n"
         )
         if self.meeting_topic:
             prompt += f"\n本次會議主題：{self.meeting_topic}\n請根據此主題的領域知識翻譯專業術語。\n"
@@ -967,6 +968,7 @@ class OllamaTranslator:
             "4. Output English only, no Chinese, Russian, Japanese or other languages\n"
             "5. Never add commentary, parenthetical notes, or translation remarks\n"
             "6. If input is incomplete, translate it literally as-is without explanation\n"
+            "7. Output translation directly, do NOT use <think> tags or any thinking process\n"
         )
         if self.meeting_topic:
             prompt += f"\nMeeting topic: {self.meeting_topic}\nTranslate domain-specific terms according to this topic.\n"
@@ -981,7 +983,7 @@ class OllamaTranslator:
         return _llm_generate(
             self._build_prompt(text, context), self.model,
             self.host, self.port, self.server_type,
-            stream=False, timeout=30,
+            stream=False, timeout=30, think=False,
         )
 
     # 翻譯幻覺關鍵詞（模型有時會輸出翻譯說明而非翻譯結果）
@@ -1034,6 +1036,10 @@ class OllamaTranslator:
             return ""
         try:
             result = self._call_ollama(text, self.context)
+            # 移除 <think>...</think> 標籤（部分模型如 Qwen3 會自動思考）
+            result = re.sub(r'<think>[\s\S]*?</think>', '', result).strip()
+            # 移除未閉合的 <think>（模型可能只輸出開頭）
+            result = re.sub(r'<think>[\s\S]*', '', result).strip()
             # 只取第一行，避免 model 輸出多餘解釋
             result = result.split("\n")[0].strip()
             if self.direction == "en2zh":
@@ -1048,6 +1054,8 @@ class OllamaTranslator:
                 else:
                     # 不帶上下文重試一次
                     result = self._call_ollama(text, [])
+                    result = re.sub(r'<think>[\s\S]*?</think>', '', result).strip()
+                    result = re.sub(r'<think>[\s\S]*', '', result).strip()
                     result = result.split("\n")[0].strip()
                     if self.direction == "en2zh":
                         result = S2TWP.convert(result)
@@ -1059,6 +1067,8 @@ class OllamaTranslator:
             if self._contains_bad_chars(result):
                 # 重試一次
                 result = self._call_ollama(text, [])
+                result = re.sub(r'<think>[\s\S]*?</think>', '', result).strip()
+                result = re.sub(r'<think>[\s\S]*', '', result).strip()
                 result = result.split("\n")[0].strip()
                 if self._contains_bad_chars(result):
                     return ""
@@ -1129,7 +1139,8 @@ def _llm_list_models(host, port, server_type):
             req = urllib.request.Request(f"http://{host}:{port}/v1/models")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
-                return [m["id"] for m in data.get("data", [])]
+                return [m["id"] for m in data.get("data", [])
+                        if m.get("owned_by") != "remote"]
     except Exception:
         pass
     return []
@@ -1165,8 +1176,9 @@ def _live_output_line(line, write_lock):
 
 
 def _llm_generate(prompt, model, host, port, server_type, stream=False,
-                  timeout=30, spinner=None, live_output=False):
-    """統一 LLM 生成介面，支援 Ollama 原生 API 和 OpenAI 相容 API"""
+                  timeout=30, spinner=None, live_output=False, think=None):
+    """統一 LLM 生成介面，支援 Ollama 原生 API 和 OpenAI 相容 API
+    think: True=啟用思考模式, False=關閉思考模式, None=不指定（由模型預設）"""
     write_lock = getattr(spinner, '_lock', None)
 
     if server_type == "openai":
@@ -1176,6 +1188,9 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
             "messages": [{"role": "user", "content": prompt}],
             "stream": stream,
         }
+        # OpenAI 相容：部分伺服器支援 chat_template_kwargs 關閉思考
+        if think is False:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
     else:
         # 預設 Ollama
         url = f"http://{host}:{port}/api/generate"
@@ -1184,6 +1199,10 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
             "prompt": prompt,
             "stream": stream,
         }
+        # Ollama：透過 options.think 控制思考模式
+        if think is not None:
+            payload["options"] = payload.get("options", {})
+            payload["options"]["think"] = think
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -1834,14 +1853,8 @@ def _check_llm_server(host, port):
     if not server_type:
         return None, []
     all_models = _llm_list_models(host, port, server_type)
-    if server_type == "ollama":
-        # Ollama：只回傳 OLLAMA_MODELS 中有的
-        remote_set = set(all_models)
-        filtered = [name for name, _ in OLLAMA_MODELS if name in remote_set]
-        return server_type, filtered
-    else:
-        # OpenAI 相容：回傳伺服器上所有模型
-        return server_type, all_models
+    # 回傳伺服器上所有模型（Ollama / OpenAI 相容行為一致）
+    return server_type, all_models
 
 
 def select_translator(init_host=None, init_port=None):
@@ -1901,6 +1914,7 @@ def select_translator(init_host=None, init_port=None):
         save_config(_config)
 
     # 建立選項列表
+    _last_model = _config.get("last_llm_model")
     options = []
     if server_type == "ollama":
         for model_name in available_models:
@@ -1909,7 +1923,7 @@ def select_translator(init_host=None, init_port=None):
     else:
         for model_name in available_models:
             options.append((model_name, "", "llm", model_name))
-    options.append(("Argos 本機離線", "品質普通，免網路", "argos", None))
+    options.append(("Argos 本機離線", "品質一般，免網路免 LLM 伺服器", "argos", None))
 
     # 計算顯示寬度以對齊欄位
     def _dw(s):
@@ -1926,10 +1940,22 @@ def select_translator(init_host=None, init_port=None):
 
     for i, (label, desc, engine, model) in enumerate(options):
         padded = label + ' ' * (col - _dw(label))
+        tags = []
         if i == default_idx:
-            print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+            tags.append(f"{C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+        if model and model == _last_model:
+            tags.append(f"{C_OK}{REVERSE} 前次使用 {RESET}")
+        tag_str = " ".join(tags)
+        if i == default_idx:
+            print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {tag_str}")
         else:
-            print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}")
+            print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}  {tag_str}")
+    # 檢查推薦翻譯模型是否存在於伺服器
+    _rec_names = {n for n, _ in _BUILTIN_TRANSLATE_MODELS}
+    _avail_names = {mod for _, _, eng, mod in options if eng == "llm"}
+    if not _rec_names & _avail_names:
+        _rec_list = " / ".join(n for n, _ in _BUILTIN_TRANSLATE_MODELS)
+        print(f"  {C_HIGHLIGHT}注意：本 LLM 伺服器未安裝推薦翻譯模型（{_rec_list}），翻譯品質可能不如預期{RESET}")
     print(f"{C_DIM}{'─' * 60}{RESET}")
     print(f"{C_WHITE}按 Enter 使用預設，或輸入編號：{RESET}", end=" ")
 
@@ -1951,6 +1977,10 @@ def select_translator(init_host=None, init_port=None):
     label, desc, engine, model = options[idx]
     print(f"  {C_OK}→ {label}{RESET}\n")
     if engine == "llm":
+        # 記住本次使用的模型
+        if model != _config.get("last_llm_model"):
+            _config["last_llm_model"] = model
+            save_config(_config)
         return engine, model, host, port, server_type
     else:
         return engine, None, None, None, None
@@ -1959,9 +1989,6 @@ def select_translator(init_host=None, init_port=None):
 def _select_llm_model(host, port, server_type):
     """CLI 模式下讓使用者選擇 LLM 翻譯模型（-e llm 但沒指定 --llm-model）"""
     available_models = _llm_list_models(host, port, server_type)
-    if server_type == "ollama":
-        remote_set = set(available_models)
-        available_models = [name for name, _ in OLLAMA_MODELS if name in remote_set]
 
     if not available_models:
         print(f"  {C_HIGHLIGHT}[警告] LLM 伺服器無可用模型，使用預設 qwen2.5:14b{RESET}")
@@ -1970,6 +1997,7 @@ def _select_llm_model(host, port, server_type):
     def _dw(s):
         return sum(2 if '\u4e00' <= c <= '\u9fff' else 1 for c in s)
 
+    _last_model = _config.get("last_llm_model")
     options = []
     if server_type == "ollama":
         for model_name in available_models:
@@ -1989,12 +2017,24 @@ def _select_llm_model(host, port, server_type):
 
     print(f"\n\n{C_TITLE}{BOLD}▎ LLM 翻譯模型{RESET}")
     print(f"{C_DIM}{'─' * 60}{RESET}")
-    for i, (label, desc, _) in enumerate(options):
+    for i, (label, desc, mod) in enumerate(options):
         padded = label + ' ' * (col - _dw(label))
+        tags = []
         if i == default_idx:
-            print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+            tags.append(f"{C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+        if mod and mod == _last_model:
+            tags.append(f"{C_OK}{REVERSE} 前次使用 {RESET}")
+        tag_str = " ".join(tags)
+        if i == default_idx:
+            print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {tag_str}")
         else:
-            print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}")
+            print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}  {tag_str}")
+    # 檢查推薦翻譯模型是否存在於伺服器
+    _rec_names2 = {n for n, _ in _BUILTIN_TRANSLATE_MODELS}
+    _avail_names2 = set(available_models)
+    if not _rec_names2 & _avail_names2:
+        _rec_list2 = " / ".join(n for n, _ in _BUILTIN_TRANSLATE_MODELS)
+        print(f"  {C_HIGHLIGHT}注意：本 LLM 伺服器未安裝推薦翻譯模型（{_rec_list2}），翻譯品質可能不如預期{RESET}")
     print(f"{C_DIM}{'─' * 60}{RESET}")
     print(f"{C_WHITE}按 Enter 使用預設，或輸入編號：{RESET}", end=" ")
 
@@ -2015,6 +2055,10 @@ def _select_llm_model(host, port, server_type):
 
     label, desc, model = options[idx]
     print(f"  {C_OK}→ {label}{RESET}\n")
+    # 記住本次使用的模型
+    if model != _config.get("last_llm_model"):
+        _config["last_llm_model"] = model
+        save_config(_config)
     return model
 
 
@@ -2554,6 +2598,13 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
     print(f"{C_TITLE}{'=' * 60}{RESET}")
     print(f"{C_TITLE}{BOLD}  {APP_NAME}{RESET}")
     print(f"{C_TITLE}  {APP_AUTHOR}{RESET}")
+    print(f"  {C_OK}ASR 引擎: Whisper ({model_name}) @ 本機 CPU{RESET}")
+    if translator:
+        if isinstance(translator, OllamaTranslator):
+            _srv_type_label = "Ollama" if translator.server_type == "ollama" else "OpenAI 相容"
+            print(f"  {C_OK}翻譯引擎: {translator.model} @ {translator.host}:{translator.port}（{_srv_type_label}）{RESET}")
+        elif isinstance(translator, ArgosTranslator):
+            print(f"  {C_OK}翻譯引擎: Argos 本機離線{RESET}")
     print(f"  {C_DIM}翻譯記錄: logs/{log_filename}{RESET}")
     if recorder:
         print(f"  {C_DIM}錄音: {recorder.path}{RESET}")
@@ -2662,7 +2713,10 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
 
     # 設定底部固定狀態列（快捷鍵提示 + 即時資訊）
-    setup_status_bar(mode, model_name=model_name, asr_location="本機")
+    _tr_model = translator.model if isinstance(translator, OllamaTranslator) else ("Argos" if isinstance(translator, ArgosTranslator) else "")
+    _tr_loc = "伺服器" if isinstance(translator, OllamaTranslator) else ("本機" if isinstance(translator, ArgosTranslator) else "")
+    setup_status_bar(mode, model_name=model_name, asr_location="本機",
+                     translate_model=_tr_model, translate_location=_tr_loc)
     signal.signal(signal.SIGWINCH, _handle_sigwinch)
 
     # 被動音量監控（Whisper 無錄音時，開輕量 stream 讀 BlackHole 給狀態列波形）
@@ -2919,6 +2973,12 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
     print(f"{C_TITLE}{BOLD}  {APP_NAME}{RESET}")
     print(f"{C_TITLE}  {APP_AUTHOR}{RESET}")
     print(f"  {C_OK}ASR 引擎: Moonshine ({moonshine_model_name}){RESET}")
+    if translator:
+        if isinstance(translator, OllamaTranslator):
+            _srv_type_label = "Ollama" if translator.server_type == "ollama" else "OpenAI 相容"
+            print(f"  {C_OK}翻譯引擎: {translator.model} @ {translator.host}:{translator.port}（{_srv_type_label}）{RESET}")
+        elif isinstance(translator, ArgosTranslator):
+            print(f"  {C_OK}翻譯引擎: Argos 本機離線{RESET}")
     print(f"  {C_DIM}翻譯記錄: logs/{log_filename}{RESET}")
     if translator and hasattr(translator, 'meeting_topic') and translator.meeting_topic:
         print(f"  {C_WHITE}會議主題: {translator.meeting_topic}{RESET}")
@@ -3203,7 +3263,10 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
 
     # 設定狀態列
-    setup_status_bar(mode, model_name=f"Moonshine {moonshine_model_name}", asr_location="本機")
+    _tr_model = translator.model if isinstance(translator, OllamaTranslator) else ("Argos" if isinstance(translator, ArgosTranslator) else "")
+    _tr_loc = "伺服器" if isinstance(translator, OllamaTranslator) else ("本機" if isinstance(translator, ArgosTranslator) else "")
+    setup_status_bar(mode, model_name=f"Moonshine {moonshine_model_name}", asr_location="本機",
+                     translate_model=_tr_model, translate_location=_tr_loc)
     signal.signal(signal.SIGWINCH, _handle_sigwinch)
 
     # 主迴圈：等待 Ctrl+C，每 0.2 秒更新狀態列（含波形）
@@ -3329,6 +3392,12 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
     print(f"{C_TITLE}{BOLD}  {APP_NAME}{RESET}")
     print(f"{C_TITLE}  {APP_AUTHOR}{RESET}")
     print(f"  {C_OK}ASR 引擎: Whisper ({model_name}) @ 遠端 GPU（{rw_host}）{RESET}")
+    if translator:
+        if isinstance(translator, OllamaTranslator):
+            _srv_type_label = "Ollama" if translator.server_type == "ollama" else "OpenAI 相容"
+            print(f"  {C_OK}翻譯引擎: {translator.model} @ {translator.host}:{translator.port}（{_srv_type_label}）{RESET}")
+        elif isinstance(translator, ArgosTranslator):
+            print(f"  {C_OK}翻譯引擎: Argos 本機離線{RESET}")
     print(f"  {C_WHITE}音訊緩衝: {length_ms}ms / 步進 {step_ms}ms{RESET}")
     print(f"  {C_DIM}翻譯記錄: logs/{log_filename}{RESET}")
     if recorder:
@@ -3610,7 +3679,10 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
     }
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
 
-    setup_status_bar(mode, model_name=model_name, asr_location="遠端")
+    _tr_model = translator.model if isinstance(translator, OllamaTranslator) else ("Argos" if isinstance(translator, ArgosTranslator) else "")
+    _tr_loc = "伺服器" if isinstance(translator, OllamaTranslator) else ("本機" if isinstance(translator, ArgosTranslator) else "")
+    setup_status_bar(mode, model_name=model_name, asr_location="伺服器",
+                     translate_model=_tr_model, translate_location=_tr_loc)
     signal.signal(signal.SIGWINCH, _handle_sigwinch)
 
     # ── 主迴圈 ──
@@ -5211,7 +5283,7 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
         rw_port = remote_whisper_cfg.get("whisper_port", REMOTE_WHISPER_DEFAULT_PORT)
         print(f"  {C_WHITE}上傳辨識中...{RESET}\n")
 
-        sbar = _SummaryStatusBar(model=model_size, task="上傳音訊", asr_location="遠端").start()
+        sbar = _SummaryStatusBar(model=model_size, task="上傳音訊", asr_location="伺服器").start()
 
         def _upload_progress(text):
             sbar.set_progress(text)
@@ -6496,13 +6568,16 @@ _status_bar_state = {
     "mode": "en2zh",     # 功能模式
     "model_name": "",    # 模型名稱（如 large-v3-turbo）
     "asr_location": "",  # ASR 位置（"本機" / "遠端"）
+    "translate_model": "",  # 翻譯模型名稱（如 qwen2.5:14b）
+    "translate_location": "",  # 翻譯位置（"本機" / "遠端"）
     "rms_history": None,  # deque(maxlen=12)，由 setup_status_bar 初始化
     "rms_lock": None,     # threading.Lock
     "paused": False,     # Ctrl+P 暫停狀態
 }
 
 
-def setup_status_bar(mode="en2zh", model_name="", asr_location=""):
+def setup_status_bar(mode="en2zh", model_name="", asr_location="",
+                     translate_model="", translate_location=""):
     """設定終端機底部固定狀態列，利用 scroll region 讓字幕只在上方滾動"""
     global _status_bar_active
     _status_bar_state["start_time"] = time.monotonic()
@@ -6510,6 +6585,8 @@ def setup_status_bar(mode="en2zh", model_name="", asr_location=""):
     _status_bar_state["mode"] = mode
     _status_bar_state["model_name"] = model_name
     _status_bar_state["asr_location"] = asr_location
+    _status_bar_state["translate_model"] = translate_model
+    _status_bar_state["translate_location"] = translate_location
     _status_bar_state["rms_history"] = deque(maxlen=12)
     _status_bar_state["rms_lock"] = threading.Lock()
     _status_bar_state["paused"] = False
@@ -6596,18 +6673,24 @@ def _draw_status_bar(rows=None, cols=None):
                 samples = samples[-12:]
             wave_str = "".join(_rms_to_bar(s) for s in samples)
         wave_colored = f"\x1b[38;2;80;200;120m{wave_str}\x1b[38;2;200;200;200m" if wave_str else ""
-        # 模型 + ASR 位置欄位
-        model_part = ""
-        model_part_display = ""
-        m_name = _status_bar_state.get("model_name", "")
+        # 語音辨識 + 翻譯模型欄位
+        info_parts = []
+        info_parts_display = []
         m_loc = _status_bar_state.get("asr_location", "")
-        if m_name:
-            if m_loc:
-                model_part = f"{m_name} [{m_loc}]"
-                model_part_display = f"{m_name} \x1b[38;2;100;180;255m[{m_loc}]\x1b[38;2;200;200;200m"
-            else:
-                model_part = m_name
-                model_part_display = m_name
+        if m_loc:
+            asr_str = f"辨識 [{m_loc}]"
+            asr_str_display = f"辨識 \x1b[38;2;100;180;255m[{m_loc}]\x1b[38;2;200;200;200m"
+            info_parts.append(asr_str)
+            info_parts_display.append(asr_str_display)
+        t_model = _status_bar_state.get("translate_model", "")
+        t_loc = _status_bar_state.get("translate_location", "")
+        if t_model:
+            tr_str = f"翻譯 [{t_loc}]" if t_loc else "翻譯"
+            tr_str_display = f"翻譯 \x1b[38;2;100;180;255m[{t_loc}]\x1b[38;2;200;200;200m" if t_loc else "翻譯"
+            info_parts.append(tr_str)
+            info_parts_display.append(tr_str_display)
+        model_part = " | ".join(info_parts)
+        model_part_display = " | ".join(info_parts_display)
         if _status_bar_state.get("paused"):
             pause_str = "\x1b[38;2;255;220;80m\u23f8 \u5df2\u66ab\u505c\x1b[38;2;200;200;200m"
             hotkey_str = "Ctrl+P \u7e7c\u7e8c | Ctrl+C \u505c\u6b62"
