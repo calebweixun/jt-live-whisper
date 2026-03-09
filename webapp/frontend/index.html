@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web 音訊串流轉譯系統</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+
+        .status {
+            background: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .status-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .label {
+            color: #666;
+            font-weight: 500;
+        }
+
+        .value {
+            font-weight: 600;
+        }
+
+        .value.success {
+            color: #10b981;
+        }
+
+        .value.error {
+            color: #ef4444;
+        }
+
+        .value.pending {
+            color: #f59e0b;
+        }
+
+        .button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .feature-list {
+            margin-top: 30px;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: start;
+            margin-bottom: 15px;
+        }
+
+        .feature-icon {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            flex-shrink: 0;
+            font-size: 16px;
+        }
+
+        .feature-text {
+            color: #666;
+            line-height: 28px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f4f6;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Web 音訊串流轉譯系統</h1>
+        <p class="subtitle">即時語音轉譯與翻譯服務</p>
+
+        <div class="status">
+            <div class="status-item">
+                <span class="label">前端服務</span>
+                <span class="value success">✓ 運行中</span>
+            </div>
+            <div class="status-item">
+                <span class="label">後端服務</span>
+                <span class="value pending" id="backend-status">
+                    <span class="spinner"></span> 檢查中...
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="label">API 服務</span>
+                <span class="value" id="api-url">localhost:8000</span>
+            </div>
+        </div>
+
+        <button class="button" id="start-btn" disabled>
+            載入中...
+        </button>
+
+        <div class="feature-list">
+            <div class="feature-item">
+                <div class="feature-icon">✓</div>
+                <div class="feature-text">即時語音轉譯（延遲 < 3 秒）</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">✓</div>
+                <div class="feature-text">即時翻譯（中英互譯）</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">✓</div>
+                <div class="feature-text">跨平台支援（任何瀏覽器）</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">✓</div>
+                <div class="feature-text">地端運算（隱私保護）</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 檢查後端服務狀態
+        async function checkBackendStatus() {
+            const backendStatus = document.getElementById('backend-status');
+            const startBtn = document.getElementById('start-btn');
+            
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/health');
+                const data = await response.json();
+                
+                if (data.success) {
+                    backendStatus.innerHTML = '✓ 運行中';
+                    backendStatus.className = 'value success';
+                    startBtn.disabled = false;
+                    startBtn.textContent = '開始使用（功能開發中）';
+                } else {
+                    throw new Error('Backend unhealthy');
+                }
+            } catch (error) {
+                backendStatus.innerHTML = '✗ 無法連線';
+                backendStatus.className = 'value error';
+                startBtn.disabled = true;
+                startBtn.textContent = '後端服務未啟動';
+                
+                // 5 秒後重試
+                setTimeout(checkBackendStatus, 5000);
+            }
+        }
+
+        // 頁面載入時檢查
+        checkBackendStatus();
+
+        // 開始按鈕事件（目前僅為測試）
+        document.getElementById('start-btn').addEventListener('click', () => {
+            alert('音訊串流介面即將推出！\n\n目前可以透過 API 文件測試：\nhttp://localhost:8000/docs');
+        });
+    </script>
+</body>
+</html>

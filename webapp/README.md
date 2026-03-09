@@ -31,24 +31,58 @@
 - **網路**: 與 Server 在同一區域網路，延遲 < 50ms
 - **硬體**: 任何支援瀏覽器的裝置（Windows、macOS、Linux、平板、手機）+ 麥克風
 
-## 快速部署（5 分鐘）
+## 快速啟動
+
+### 方法 1: 一鍵啟動（推薦）
+
+自動建立虛擬環境、安裝依賴、同時啟動前後端：
+
+```bash
+cd webapp
+./start-all.sh
+```
+
+服務啟動後：
+- 前端: http://localhost:3000
+- 後端: http://localhost:8000
+- API 文件: http://localhost:8000/docs
+
+停止服務：
+```bash
+./stop.sh
+# 或按 Ctrl+C
+```
+
+### 方法 2: 僅啟動後端
+
+如果只需要啟動後端（例如用於開發前端）：
+
+```bash
+./quickstart.sh
+```
+
+然後在另一個終端啟動前端：
+```bash
+cd frontend
+python3 -m http.server 3000
+```
+
+## Docker 部署（生產環境）
 
 ### Step 1: 複製專案
 
 ```bash
 git clone https://github.com/calebweixun/jt-live-whisper.git
-cd jt-live-whisper
-git checkout 001-web-streaming-interface
+cd jt-live-whisper/webapp
 ```
 
 ### Step 2: 設定環境變數
 
 ```bash
-cd webapp
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-編輯 `.env` 檔案（根據你的環境調整）：
+編輯 `backend/.env` 檔案（根據你的環境調整）：
 
 ```bash
 # Server 設定
@@ -67,7 +101,7 @@ OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TIMEOUT=10
 
 # Storage 設定
-DATA_DIR=/app/data
+DATA_DIR=../data
 MAX_AUDIO_SIZE_MB=100
 RETENTION_DAYS=7
 

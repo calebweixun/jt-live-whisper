@@ -21,16 +21,17 @@ async def health_check() -> Dict[str, Any]:
     
     檢查服務健康狀態和各項功能可用性
     """
+    from ..services.transcription import get_transcription_service
+    from ..services.session_manager import get_session_manager
+    
     try:
         # 檢查轉譯服務
-        transcription_available = True
+        transcription_service = get_transcription_service()
+        transcription_available = transcription_service.is_available()
         transcription_error = None
-        try:
-            # TODO: 實際檢查 faster-whisper 是否可用
-            pass
-        except Exception as e:
-            transcription_available = False
-            transcription_error = str(e)
+        
+        if not transcription_available:
+            transcription_error = "Transcription service not initialized"
         
         # 檢查翻譯服務
         translation_available = True
@@ -45,26 +46,15 @@ async def health_check() -> Dict[str, Any]:
         # 檢查 GPU (如果使用)
         gpu_info = {}
         if settings.whisper_device == "cuda":
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    gpu_info = {
-                        "available": True,
-                        "device_count": torch.cuda.device_count(),
-                        "device_name": torch.cuda.get_device_name(0),
-                        "memory_allocated": f"{torch.cuda.memory_allocated(0) / 1024**3:.2f} GB",
-                        "memory_total": f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
-                    }
-                else:
-                    gpu_info = {"available": False, "reason": "CUDA not available"}
-            except Exception as e:
-                gpu_info = {"available": False, "error": str(e)}
+            gpu_info = transcription_service.check_gpu_availability()
         
         # 統計資訊
-        # TODO: 實際統計活動連線數、總會話數等
+        session_manager = get_session_manager()
+        active_connections = session_manager.get_active_session_count()
+        
         statistics = {
-            "active_connections": 0,
-            "total_sessions": 0
+            "active_connections": active_connections,
+            "total_sessions": len(session_manager.list_sessions())
         }
         
         if gpu_info:
