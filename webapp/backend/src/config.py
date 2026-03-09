@@ -4,6 +4,7 @@
 """
 import os
 import logging
+from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -47,6 +48,26 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+    
+    def get_data_dir(self) -> Path:
+        """獲取 data 目錄的 Path 物件"""
+        return Path(self.data_dir)
+    
+    def get_audio_dir(self) -> Path:
+        """獲取 audio 目錄的 Path 物件"""
+        return self.get_data_dir() / "audio"
+    
+    def get_sessions_dir(self) -> Path:
+        """獲取 sessions 目錄的 Path 物件"""
+        return self.get_data_dir() / "sessions"
+    
+    def get_transcripts_dir(self) -> Path:
+        """獲取 transcripts 目錄的 Path 物件"""
+        return self.get_data_dir() / "transcripts"
+    
+    def get_translations_dir(self) -> Path:
+        """獲取 translations 目錄的 Path 物件"""
+        return self.get_data_dir() / "translations"
 
 
 # 全局配置實例

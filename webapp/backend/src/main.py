@@ -24,7 +24,7 @@ settings = get_settings()
 init_storage_service(settings.data_dir)
 
 # 初始化音訊處理器
-init_audio_processor(settings.data_dir / "audio")
+init_audio_processor(str(settings.get_audio_dir()))
 
 # 初始化轉譯服務
 init_transcription_service(
@@ -124,7 +124,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        "src.main:app",
         host=settings.server_host,
         port=settings.server_port,
         reload=True,
