@@ -1,0 +1,94 @@
+# Python 虛擬環境
+venv/
+env/
+ENV/
+.venv/
+
+# Python 編譯檔案與快取
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+
+# 音訊檔案與記錄
+logs/
+recordings/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+
+# AI 模型檔案（大型檔案）
+*.gguf
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# whisper.cpp（編譯引擎，安裝時自動下載）
+whisper.cpp/
+
+# 使用者設定檔
+config.json
+*.local
+
+# IDE 與編輯器設定
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 系統檔案
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 暫存檔
+*.tmp
+*.temp
+*.log
+
+# 編譯產物（whisper.cpp）
+whisper.cpp/build/
+whisper.cpp/main
+whisper.cpp/server
+whisper.cpp/bench
+whisper.cpp/stream
+whisper.cpp/command
+whisper.cpp/quantize
+whisper.cpp/*.o
+whisper.cpp/*.a
+
+# 測試覆蓋率報告
+.coverage
+coverage.xml
+*.cover
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 環境變數檔案
+.env
+.env.local
+.env.*
+
+# 備份檔案
+*.bak
+*.backup
+
+recordings/*
