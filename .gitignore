@@ -3,6 +3,12 @@ venv/
 env/
 ENV/
 .venv/
+webapp/backend/venv/
+
+# Node.js 依賴（如果前端使用任何工具）
+node_modules/
+package-lock.json
+yarn.lock
 
 # Python 編譯檔案與快取
 __pycache__/
@@ -30,6 +36,14 @@ recordings/
 *.flac
 *.ogg
 *.opus
+
+# Webapp 資料目錄（包含音訊、轉譯記錄等）
+webapp/data/
+data/sessions/
+data/audio/
+data/transcripts/
+data/translations/
+data/logs/
 
 # AI 模型檔案（大型檔案）
 *.gguf
