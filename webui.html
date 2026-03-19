@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>jt-live-whisper</title>
+<style>
+:root {
+  --bg:#f0f2f5;--bg2:#fff;--bg3:#f7f8fa;--card-bg:#fff;--section-bg:#f7f8fa;
+  --bg-other:#e8ecf1;--bg-self:#d1e7dd;
+  --text:#1a1a2e;--text-dim:#6c757d;--text-src:#0a58ca;--text-dst:#0f5132;
+  --accent:#0d6efd;--green:#198754;--red:#dc3545;--orange:#fd7e14;
+  --border:#dee2e6;--border-light:#e9ecef;
+  --header-bg:linear-gradient(135deg,#2c3e50,#3498db);
+  --input-bg:#fff;--input-border:#ced4da;--input-focus:#86b7fe;
+  --btn-bg:linear-gradient(135deg,#2c3e50,#3498db);--btn-hover:linear-gradient(135deg,#243342,#2980b9);
+  --btn-danger:#dc3545;--btn-danger-hover:#bb2d3b;
+  --shadow:0 2px 12px rgba(0,0,0,.08);--shadow-lg:0 8px 32px rgba(0,0,0,.12);
+  --drop-shadow:0 6px 24px rgba(0,0,0,.15);--scrollbar:#c0c0c0;--radius:12px;--radius-sm:8px;
+  --sel-hover:#dce8ff;--sel-active:#c5d8f8;
+}
+.dark{
+  --bg:#0f1118;--bg2:#1a1d28;--bg3:#22263a;--card-bg:#1a1d28;--section-bg:#22263a;
+  --bg-other:#252a3a;--bg-self:#1a3a2a;
+  --text:#e0e0e0;--text-dim:#8b949e;--text-src:#79c0ff;--text-dst:#7ee787;
+  --accent:#79c0ff;--border:#30363d;--border-light:#2d333b;
+  --header-bg:linear-gradient(135deg,#1a2332,#1e3a5f);
+  --input-bg:#161b22;--input-border:#30363d;--input-focus:#58a6ff;
+  --btn-bg:linear-gradient(135deg,#1e3a5f,#2980b9);--btn-hover:linear-gradient(135deg,#162d4a,#2471a3);
+  --shadow:0 2px 12px rgba(0,0,0,.3);--shadow-lg:0 8px 32px rgba(0,0,0,.4);
+  --drop-shadow:0 6px 24px rgba(0,0,0,.5);--scrollbar:#3a3f4b;--sel-hover:#334060;--sel-active:#3a4d75;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;height:100vh;transition:all .3s}
+body:not(.has-live){overflow:auto}
+.hdr{background:var(--header-bg);color:#fff;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;z-index:100;box-shadow:0 2px 16px rgba(0,0,0,.15)}
+.hdr-left{display:flex;align-items:center;gap:12px}.hdr-dot{width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.3);flex-shrink:0}
+.hdr-dot.on{background:#4ade80;box-shadow:0 0 12px rgba(74,222,128,.6);animation:glow 2s infinite}
+@keyframes glow{0%,100%{box-shadow:0 0 12px rgba(74,222,128,.6)}50%{box-shadow:0 0 4px rgba(74,222,128,.2)}}
+.hdr-title{font-weight:700;font-size:17px}.hdr-ver{font-size:12px;opacity:.6}.hdr-stats{display:flex;gap:16px;font-size:13px;opacity:.8}
+.hdr-right{display:flex;gap:8px}.hdr-btn{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:all .2s}.hdr-btn:hover{background:rgba(255,255,255,.25)}
+.setup{flex:1;overflow-y:auto;display:flex;flex-direction:column;justify-content:flex-start;align-items:center;padding:28px 16px}
+.cfg-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 0}
+.cfg-spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.card{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:28px;max-width:520px;width:100%;box-shadow:var(--shadow-lg);margin-bottom:32px}
+.card h2{font-size:19px;margin-bottom:6px}.card-sub{font-size:13px;color:var(--text-dim);margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--border-light)}
+.sec{background:var(--section-bg);border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:18px 16px 16px;margin-bottom:28px;position:relative;margin-top:22px}
+.sec-title{display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#fff;background:linear-gradient(135deg,#2c3e50,#3498db);padding:5px 16px;border:none;border-radius:6px;position:absolute;top:-15px;left:14px;letter-spacing:.5px;box-shadow:0 2px 6px rgba(52,152,219,.25)}
+.sec-title svg{width:16px;height:16px;stroke:#fff;flex-shrink:0}
+.dark .sec-title{background:linear-gradient(135deg,#1e3a5f,#2980b9)}
+.sec-hint{font-size:12px;color:var(--text-dim);margin-bottom:12px;line-height:1.6;padding-left:2px}
+.fg{margin-bottom:14px}.fg:last-child{margin-bottom:0}
+.fg label{display:block;font-size:13px;color:var(--text-dim);margin-bottom:4px;font-weight:700}
+.fg input{width:100%;padding:9px 12px;font-size:14px;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:var(--radius-sm);outline:none;transition:border .2s,box-shadow .2s}
+.fg input:focus{border-color:var(--input-focus);box-shadow:0 0 0 3px rgba(13,110,253,.12)}
+.row2{display:flex;gap:12px}.row2 .fg{flex:1}
+.row3{display:flex;gap:8px;align-items:flex-end}.row3 .fg{flex:1;margin-bottom:0}
+.test-btn{padding:0 16px;font-size:13px;background:var(--bg2);color:var(--text);border:1px solid var(--input-border);border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap;flex-shrink:0;height:38px;line-height:38px;transition:all .2s;margin-bottom:0}.test-btn:hover{border-color:var(--accent);color:var(--accent)}
+.test-ok{color:var(--green);font-size:12px;margin-top:6px}.test-err{color:var(--red);font-size:12px;margin-top:6px}
+.checks{display:flex;gap:18px;flex-wrap:wrap}.checks label{font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);padding:6px 0}.checks input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+.llm-area{display:none}.llm-area.show{display:block}
+.go-btn{width:100%;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--btn-bg);border:none;border-radius:var(--radius-sm);cursor:pointer;transition:all .2s;margin-top:8px;box-shadow:0 4px 12px rgba(52,152,219,.3)}.go-btn:hover{background:var(--btn-hover);box-shadow:0 6px 20px rgba(52,152,219,.4);transform:translateY(-1px)}.go-btn:active{transform:translateY(0)}.go-btn:disabled{opacity:.5;cursor:default;transform:none;box-shadow:none}
+/* Custom Select */
+.csel{position:relative;width:100%}.csel-display{width:100%;padding:9px 36px 9px 12px;font-size:14px;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:var(--radius-sm);cursor:pointer;transition:border .2s,box-shadow .2s;user-select:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative}
+.csel-display::after{content:'';position:absolute;right:12px;top:50%;transform:translateY(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:5px solid var(--text-dim);transition:transform .2s}.csel.open .csel-display::after{transform:translateY(-50%) rotate(180deg)}
+.csel.open .csel-display,.csel-display:hover{border-color:var(--input-focus);box-shadow:0 0 0 3px rgba(13,110,253,.12)}
+.csel-drop{display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:100%;width:max-content;max-width:90vw;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-sm);box-shadow:var(--drop-shadow);z-index:50;max-height:260px;overflow-y:auto;padding:4px}
+.csel.open .csel-drop{display:block}.csel-drop::-webkit-scrollbar{width:5px}.csel-drop::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px}
+.csel-group{font-size:11px;font-weight:700;color:var(--accent);padding:10px 12px 5px;letter-spacing:.5px;background:var(--section-bg);border-radius:4px;margin:2px 0}.csel-group:not(:first-child){border-top:2px solid var(--border);margin-top:6px;padding-top:10px}
+.csel-item{padding:8px 12px;font-size:14px;border-radius:6px;cursor:pointer;transition:background .15s;display:flex;justify-content:space-between;align-items:center;white-space:nowrap}.csel-item:hover{background:var(--sel-hover)}.csel-item.active{background:var(--sel-active);font-weight:500}
+.csel-item.disabled{opacity:.4;cursor:not-allowed}.csel-item.disabled:hover{background:transparent}
+.csel-item .tag{font-size:10px;padding:1px 8px;border-radius:4px;margin-left:8px;flex-shrink:0;font-weight:600}.csel-item .tag-default{background:#f0ad4e;color:#fff}.csel-item .tag-last{background:#28a745;color:#fff}.csel-item .tag-disabled{background:#adb5bd;color:#fff}.dark .csel-item .tag-default{background:#c68a1a}.dark .csel-item .tag-last{background:#1e7e34}.dark .csel-item .tag-disabled{background:#6c757d}
+/* File area */
+.file-area{display:none}.file-area.show{display:block}
+.file-list{max-height:200px;overflow-y:auto;border:1px solid var(--border-light);border-radius:var(--radius-sm);margin-bottom:12px}
+.file-list::-webkit-scrollbar{width:5px}.file-list::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px}
+.file-item{padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:13px;border-bottom:1px solid var(--border-light);cursor:pointer;transition:background .15s}.file-item:last-child{border-bottom:none}.file-item:hover{background:var(--sel-hover)}.file-item.sel{background:var(--sel-active)}
+.file-item input{accent-color:var(--accent);width:16px;height:16px;flex-shrink:0}.file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-size{color:var(--text-dim);font-size:12px;flex-shrink:0}
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius-sm);padding:20px;text-align:center;color:var(--text-dim);font-size:13px;cursor:pointer;transition:border-color .2s,background .2s}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--sel-hover)}
+.upload-zone input{display:none}
+/* Live */
+.live{flex:1;display:none;flex-direction:column;min-height:0}.live.on{display:flex}
+.sbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:8px 24px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--text-dim);flex-shrink:0;gap:8px;flex-wrap:wrap}
+.sbar-left{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.sbar-right{display:flex;gap:12px;align-items:center}
+@font-face{font-family:'7seg';src:url('data:font/woff2;base64,') format('woff2')}
+.timer{font-family:"SF Mono","Courier New",monospace;font-size:18px;color:var(--text);min-width:65px;font-weight:700;letter-spacing:2px;background:var(--section-bg);padding:3px 10px;border-radius:6px;border:1px solid var(--border-light);text-align:center;font-variant-numeric:tabular-nums}
+.vol-bar{display:flex;align-items:flex-end;gap:1px;height:22px;background:var(--section-bg);border:1px solid var(--border-light);border-radius:4px;padding:2px 4px}.vol-bar span{width:3px;background:var(--green);border-radius:1px;transition:height .15s}
+.sbadge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 10px;border-radius:12px;font-weight:500}
+.dev-badge{transition:all .2s}.dev-badge.muted{opacity:.35;text-decoration:line-through;filter:grayscale(1)}
+.sbadge svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.5}
+.sbadge-mode{background:rgba(52,152,219,.15);color:#2980b9}.dark .sbadge-mode{background:rgba(121,192,255,.15);color:#79c0ff}
+.sbadge-model{background:rgba(142,68,173,.12);color:#8e44ad}.dark .sbadge-model{background:rgba(187,143,206,.15);color:#bb8fce}
+.sbadge-trans{background:rgba(230,126,34,.12);color:#d35400}.dark .sbadge-trans{background:rgba(243,156,18,.15);color:#f39c12}
+.sbadge-rec{background:rgba(220,53,69,.12);color:var(--red)}.sbadge-denoise{background:rgba(25,135,84,.12);color:var(--green)}.sbadge-mic{background:rgba(13,110,253,.12);color:var(--accent)}.sbadge-diarize{background:rgba(253,126,20,.12);color:var(--orange)}.sbadge-summarize{background:rgba(111,66,193,.12);color:#6f42c1}
+.msgs{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px;min-height:0}.msgs::-webkit-scrollbar{width:5px}.msgs::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px}
+.msgs{scroll-behavior:smooth}
+.m{max-width:78%;padding:10px 16px;border-radius:12px;font-size:15px;line-height:1.6;word-wrap:break-word;animation:msgIn .4s ease;transform-origin:bottom}
+.m.o{align-self:flex-start;background:var(--bg-other);border-left:3px solid var(--text-src)}
+.m.s{align-self:flex-end;background:var(--bg-self);border-right:3px solid var(--text-dst)}
+@keyframes msgIn{from{opacity:0}to{opacity:1}}
+.m-lang{display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;padding:0;border-radius:4px;margin-right:6px;vertical-align:middle;letter-spacing:.3px;min-width:32px;height:22px;text-align:center}
+.m-spk{display:inline-block;font-size:11px;font-weight:600;color:#fff;padding:2px 8px;border-radius:4px;margin-bottom:4px}
+.m-lang-src{background:#0a58ca;color:#fff}.dark .m-lang-src{background:#2563eb}
+.m-lang-dst{background:#0f5132;color:#fff}.dark .m-lang-dst{background:#16a34a}
+.m-s,.m-d{color:var(--text);font-size:15px;display:flex;align-items:flex-start;gap:0;flex-wrap:nowrap}
+.m-s{font-weight:500}.m-d{margin-top:2px;padding-top:2px;border-top:1px dashed var(--border)}
+.m-s .b,.m-d .b,.m-s .m-lang,.m-d .m-lang{flex-shrink:0}
+.m-text{flex:1;min-width:0}
+.m-t{font-size:10px;color:var(--text-dim);margin-top:2px}
+.b{display:inline-flex;align-items:center;justify-content:center;padding:0;border-radius:4px;font-size:10px;color:#fff;margin-right:4px;font-weight:600;min-width:52px;height:22px;text-align:center;vertical-align:middle}.bf{background:var(--green)}.bm{background:var(--orange)}.bs{background:var(--red)}
+/* Subtitle mode */
+.sub-mode{background:#000!important}
+.sub-mode .sbar{background:rgba(0,0,0,.8);border-bottom:none;color:rgba(255,255,255,.6)}
+.sub-mode .sbar .timer{background:transparent;border:1px solid rgba(255,255,255,.2);color:#fff}
+.sub-mode .sbar .sbadge{background:rgba(255,255,255,.1)!important;color:rgba(255,255,255,.7)!important}
+.sub-mode .sbar .vol-bar span{background:#4ade80}
+.sub-mode .sbar .vol-bar{border-color:rgba(255,255,255,.2);background:rgba(255,255,255,.05)}
+.sub-mode .msgs{justify-content:flex-end;padding:0 5% 30px;gap:6px;background:#000}
+.sub-mode .m{max-width:100%!important;background:transparent!important;border:none!important;border-left:none!important;border-right:none!important;box-shadow:none!important;padding:4px 0;border-radius:0!important;animation:subIn .5s ease}
+.sub-mode .m.o{align-self:center!important;text-align:center}
+.sub-mode .m.s{align-self:flex-end!important;text-align:right}
+.sub-mode.bidi .m.o{align-self:flex-start!important;text-align:left}
+@keyframes subIn{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+.sub-mode .b{display:none}
+.sub-mode .m.o .m-s{color:#fff!important;font-size:22px;font-weight:400;text-shadow:0 2px 8px rgba(0,0,0,.8),0 0 2px rgba(0,0,0,.9);line-height:1.3}
+.sub-mode .m.o .m-d{color:#ffd700!important;font-size:24px;font-weight:500;border-top:none!important;margin-top:-2px;padding-top:0;text-shadow:0 2px 8px rgba(0,0,0,.8),0 0 2px rgba(0,0,0,.9);line-height:1.3}
+.sub-mode .m.s{align-self:flex-end!important;text-align:right}
+.sub-mode .m.s .m-s{color:#93c5fd!important;font-size:20px;font-weight:400;text-shadow:0 2px 8px rgba(0,0,0,.8),0 0 2px rgba(0,0,0,.9);line-height:1.3}
+.sub-mode .m.s .m-d{color:#86efac!important;font-size:22px;font-weight:500;border-top:none!important;margin-top:-2px;padding-top:0;text-shadow:0 2px 8px rgba(0,0,0,.8),0 0 2px rgba(0,0,0,.9);line-height:1.3}
+.sub-mode .m-lang{display:none}
+.sub-mode .m-t{display:none}
+.sub-mode .bar{background:rgba(0,0,0,.6);border-top:none}
+.mode-toggle{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:var(--radius-sm);font-size:12px;cursor:pointer;margin-left:8px}.mode-toggle:hover{border-color:var(--accent)}.mode-toggle.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.new-btn,.mode-toggle{transition:none}
+.bar{background:var(--bg2);border-top:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;z-index:10;position:relative}
+.stop-btn{padding:7px 22px;font-size:13px;color:#fff;background:var(--btn-danger);border:none;border-radius:var(--radius-sm);cursor:pointer;transition:all .2s}.stop-btn:hover{background:var(--btn-danger-hover)}.stop-btn:disabled{opacity:.5;cursor:default}
+kbd{display:inline-block;font-family:inherit;font-size:10px;padding:1px 5px;border:1px solid rgba(255,255,255,.3);border-radius:3px;background:rgba(255,255,255,.15);margin-left:4px;vertical-align:middle;line-height:1.4}
+.mode-toggle kbd{border-color:var(--border);background:var(--bg3);color:var(--text-dim)}.mode-toggle.active kbd{border-color:rgba(255,255,255,.3);background:rgba(255,255,255,.15);color:#fff}
+.new-btn{background:var(--accent);color:#fff;border:none;padding:5px 14px;border-radius:16px;font-size:12px;cursor:pointer;display:none;position:absolute;left:50%;transform:translateX(-50%)}.new-btn.vis{display:inline-block}
+.bar-info{font-size:12px;color:var(--text-dim);margin-left:12px}
+.disc-msg{text-align:center;padding:16px;color:var(--text);font-size:14px;border:1px solid var(--border);border-radius:var(--radius-sm);margin:12px auto;max-width:360px;background:var(--bg3);line-height:1.8}
+.disc-msg .disc-title{font-weight:600;margin-bottom:4px}.disc-msg .disc-path{font-size:12px;color:var(--accent);word-break:break-all}
+.toast{position:fixed;top:60px;left:50%;transform:translateX(-50%);padding:12px 24px;border-radius:var(--radius-sm);font-size:14px;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.25);animation:toastIn .3s ease}
+.toast-err{background:var(--red);color:#fff}.toast-ok{background:var(--green);color:#fff}
+@keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.flash-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:#fff;z-index:300;pointer-events:none;animation:flashFx .8s ease-out forwards}
+.dark .flash-overlay{background:#4a90d9}
+@keyframes flashFx{0%{opacity:.6}50%{opacity:.3}100%{opacity:0}}
+.flash-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(1);z-index:301;pointer-events:none;font-size:52px;font-weight:800;color:rgba(0,0,0,.7);animation:flashTextFx 1.2s ease-out forwards;letter-spacing:6px}
+.dark .flash-text{color:rgba(255,255,255,.8)}
+@keyframes flashTextFx{0%{opacity:1;transform:translate(-50%,-50%) scale(.9)}30%{opacity:1;transform:translate(-50%,-50%) scale(1.1)}100%{opacity:0;transform:translate(-50%,-50%) scale(2.2)}}
+@media(max-width:600px){
+  .m{max-width:90%}.hdr-stats{display:none}.hdr-ver{display:none}
+  .card{margin:8px;padding:16px}.sec{padding:14px 12px 12px}
+  .sbar{padding:6px 10px;font-size:11px}.sbar-left{gap:6px}.sbadge{font-size:10px;padding:2px 6px}
+  .timer{font-size:13px;padding:2px 6px;min-width:45px}
+  .bar{flex-wrap:wrap;gap:6px;padding:8px 10px}
+  .bar>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  #bDevices{display:flex;flex-wrap:wrap;gap:4px;width:100%;order:10;margin-left:0!important;margin-top:4px}
+  .mode-toggle{font-size:11px;padding:4px 8px;white-space:nowrap}
+  .new-btn{position:static;transform:none}
+}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="hdr-left"><span class="hdr-dot" id="dot"></span><a class="hdr-title" href="https://github.com/jasoncheng7115/jt-live-whisper" target="_blank" style="color:#fff;text-decoration:none">jt-live-whisper</a><span class="hdr-ver" id="verLabel"></span><div class="hdr-stats"><span id="hMode">--</span><span id="hCount"></span></div></div>
+  <div class="hdr-right"><button class="hdr-btn" onclick="toggleTheme()" id="tBtn">深色主題</button></div>
+</div>
+<div class="setup" id="pSetup">
+<div class="cfg-loading" id="cfgLoading"><div class="cfg-spinner"></div><div style="margin-top:12px;color:var(--text-dim);font-size:14px">載入設定中...</div></div>
+<div class="card" id="cfgCard" style="opacity:0;transition:opacity .3s">
+  <h2>即時辨識設定</h2>
+  <div class="card-sub">設定完成後按下「開始」即可啟動即時辨識或離線處理</div>
+  <!-- 輸入來源 -->
+  <div class="sec">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M3 7V17C3 18.1046 3.89543 19 5 19H19C20.1046 19 21 18.1046 21 17V7" stroke="currentColor"/><path d="M1 7H23" stroke="currentColor" stroke-linecap="round"/><path d="M12 11V15M12 15L9 12.5M12 15L15 12.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>輸入來源</div>
+    <div class="sec-hint">選擇即時擷取系統音訊，或讀入既有的音訊/影片檔案進行離線處理。</div>
+    <div class="fg"><label>來源</label><div class="csel" id="iSource" data-value=""></div></div>
+    <div class="file-area" id="fileArea">
+      <div class="fg"><label>recordings/ 目錄中的檔案（點選可多選）</label>
+        <input id="fileFilter" placeholder="輸入關鍵字篩選..." style="margin-bottom:8px" oninput="filterFiles()">
+        <div class="file-list" id="fileList"><div style="padding:12px;color:var(--text-dim);text-align:center">載入中...</div></div>
+      </div>
+      <div class="upload-zone" id="uploadZone" onclick="$('uploadInput').click()">
+        <input type="file" id="uploadInput" multiple accept=".mp3,.wav,.m4a,.flac,.ogg,.mp4,.mkv,.webm,.avi">
+        拖曳音訊/影片檔案到此處，或點按選擇檔案
+      </div>
+    </div>
+  </div>
+  <!-- 語音辨識 -->
+  <div class="sec">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><rect x="9" y="2" width="6" height="12" rx="3" stroke="currentColor"/><path d="M5 10V11C5 14.866 8.13401 18 12 18C15.866 18 19 14.866 19 11V10" stroke="currentColor" stroke-linecap="round"/><path d="M12 18V22M12 22H9M12 22H15" stroke="currentColor" stroke-linecap="round"/></svg>語音辨識</div>
+    <div class="sec-hint" id="asrHint">選擇辨識模式與引擎。雙向模式建議使用耳麥避免影響。場景的緩衝長度越長句子越完整，越短反應越即時。</div>
+    <div class="fg"><label>功能模式</label><div class="csel" id="iMode" data-value=""></div></div>
+    <div class="fg" id="rAsrLoc"><label>辨識位置</label><div class="csel" id="iAsrLoc" data-value=""></div></div>
+    <div id="rModelScene">
+      <div class="fg"><label>辨識模型</label><div class="csel" id="iModel" data-value=""></div></div>
+      <div class="fg" id="rScene"><label>場景</label><div class="csel" id="iScene" data-value=""></div></div>
+    </div>
+  </div>
+  <!-- 語言翻譯 -->
+  <div class="sec" id="rEngine">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M2 12C2 17.5228 6.47715 22 12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12Z" stroke="currentColor"/><path d="M13 2.05C13 2.05 16 6 16 12C16 18 13 21.95 13 21.95" stroke="currentColor"/><path d="M11 21.95C11 21.95 8 18 8 12C8 6 11 2.05 11 2.05" stroke="currentColor"/><path d="M2.63 15.5H21.37" stroke="currentColor"/><path d="M2.63 8.5H21.37" stroke="currentColor"/></svg>語言翻譯</div>
+    <div class="sec-hint">要更好的翻譯品質，請搭配 LLM 伺服器與適當模型。轉錄模式不需翻譯引擎。</div>
+    <div class="fg"><label>翻譯引擎</label><div class="csel" id="iEngine" data-value=""></div></div>
+    <div class="llm-area" id="llmArea">
+      <div class="row3"><div class="fg"><label>LLM 主機</label><input id="iLlmHost" placeholder="192.168.1.40:11434"></div><button class="test-btn" id="testBtn" onclick="testLlm()">測試連線</button></div>
+      <div id="testResult"></div>
+      <div class="fg" style="margin-top:12px"><label>LLM 模型</label><div class="csel" id="iLlmModel" data-value=""></div></div>
+    </div>
+  </div>
+  <!-- 音訊裝置 -->
+  <div class="sec" id="rDevices">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M1 13.857V10.143C1 9.038 1.895 8.143 3 8.143H5.9C6.096 8.143 6.287 8.085 6.45 7.978L12.45 4.022C13.114 3.584 14 4.061 14 4.857V19.143C14 19.939 13.114 20.416 12.45 19.978L6.45 16.022C6.287 15.915 6.096 15.857 5.9 15.857H3C1.895 15.857 1 14.962 1 13.857Z" stroke="currentColor"/><path d="M17.5 7.5C17.5 7.5 19 9 19 11.5C19 14 17.5 15.5 17.5 15.5" stroke="currentColor" stroke-linecap="round"/><path d="M20.5 4.5C20.5 4.5 23 7 23 11.5C23 16 20.5 18.5 20.5 18.5" stroke="currentColor" stroke-linecap="round"/></svg>音訊裝置</div>
+    <div class="sec-hint" id="devHint">系統音訊擷取播放中的聲音，麥克風擷取本機輸入。通常選「自動偵測」即可。</div>
+    <div class="fg"><label>系統音訊（Loopback）</label><div class="csel" id="iDevice" data-value=""></div><div id="devAutoLb" style="margin-top:4px"></div></div>
+    <div class="fg"><label>麥克風</label><div class="csel" id="iMicDev" data-value=""></div><div id="devAutoMic" style="margin-top:4px"></div></div>
+  </div>
+  <!-- 離線處理選項 -->
+  <div class="sec" id="rOffline" style="display:none">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M9 2H15M12 10V6M20 12V18C20 19.1046 19.1046 20 18 20H6C4.89543 20 4 19.1046 4 18V12C4 10.8954 4.89543 10 6 10H18C19.1046 10 20 10.8954 20 12Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 14H8.01M12 14H12.01M16 14H16.01" stroke="currentColor" stroke-linecap="round"/></svg>離線處理選項</div>
+    <div class="sec-hint">講者辨識可區分不同發言者，搭配摘要可自動產生會議重點。摘要需要 LLM 伺服器。</div>
+    <div class="checks">
+      <label><input type="checkbox" id="iDiarize" onchange="onDiarizeChg()"> 講者辨識</label>
+      <label><input type="checkbox" id="iSummarize" onchange="onSummarizeChg()"> 產生摘要</label>
+    </div>
+    <div class="fg" id="rNumSpk" style="display:none;margin-top:10px">
+      <label>講者人數</label>
+      <div style="display:flex;align-items:center;gap:8px"><input type="number" id="iNumSpk" min="0" max="20" value="0" style="width:80px"><span style="font-size:12px;color:var(--text-dim)">0 = 自動偵測，若已知人數建議填入可提升精準度</span></div>
+    </div>
+    <div class="fg" id="rSumModel" style="display:none;margin-top:10px">
+      <label>摘要模型</label>
+      <div class="csel" id="iSumModel" data-value=""></div>
+    </div>
+  </div>
+  <!-- 其他設定 -->
+  <div class="sec" id="rOther">
+    <div class="sec-title"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M12 15C13.657 15 15 13.657 15 12C15 10.343 13.657 9 12 9C10.343 9 9 10.343 9 12C9 13.657 10.343 15 12 15Z" stroke="currentColor"/><path d="M19.622 10.395L18.525 7.745L20 6L18 4L16.265 5.483L13.558 4.37L12.935 2H10.981L10.349 4.401L7.704 5.516L6 4L4 6L5.453 7.789L4.373 10.446L2 11V13L4.401 13.656L5.516 16.3L4 18L6 20L7.791 18.54L10.397 19.612L11 22H13L13.605 19.613L16.255 18.516C16.697 18.831 18 20 18 20L20 18L18.516 16.249L19.614 13.598L22 12.977L22 11L19.622 10.395Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>其他設定</div>
+    <div class="sec-hint">填寫會議主題與關鍵字（如專有名詞、人名、技術術語），可讓 LLM 翻譯更準確。降噪適合嘈雜環境。錄音檔儲存於 recordings/ 目錄。</div>
+    <div class="fg"><label>會議主題（選填）</label><input id="iTopic" placeholder="例：Proxmox VE 建置啟動會議、Graylog 收取裝置評估..."></div>
+    <div class="checks">
+      <label><input type="checkbox" id="iRec"> 錄音至檔案</label>
+      <label><input type="checkbox" id="iMic"> 轉錄麥克風</label>
+      <label><input type="checkbox" id="iDenoise" checked> 降噪</label>
+    </div>
+  </div>
+  <button class="go-btn" id="goBtn" onclick="go()">開始</button>
+</div>
+</div>
+<!-- Live -->
+<div class="live" id="pLive">
+  <div class="sbar">
+    <div class="sbar-left">
+      <span class="timer" id="sTimer">00:00</span>
+      <span class="sbadge sbadge-mode" id="bMode"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="sMode"></span></span>
+      <span class="sbadge sbadge-model" id="bModel"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-linecap="round"/></svg><span id="sModel"></span></span>
+      <span class="sbadge sbadge-trans" id="bTrans" style="display:none"><svg viewBox="0 0 24 24"><path d="M2 12C2 17.5 6.5 22 12 22C17.5 22 22 17.5 22 12C22 6.5 17.5 2 12 2C6.5 2 2 6.5 2 12Z" stroke="currentColor"/><path d="M2.6 15.5H21.4M2.6 8.5H21.4" stroke="currentColor"/></svg><span id="sEngine"></span></span>
+      <span class="sbadge sbadge-rec" id="bRec" style="display:none"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor" stroke="none"/></svg>錄音中</span>
+      <span class="sbadge sbadge-denoise" id="bDenoise" style="display:none"><svg viewBox="0 0 24 24"><path d="M2 12C2 6.5 6.5 2 12 2M22 12C22 17.5 17.5 22 12 22M8 12C8 9.8 9.8 8 12 8M16 12C16 14.2 14.2 16 12 16" stroke="currentColor" stroke-linecap="round"/></svg>降噪</span>
+      <span class="sbadge sbadge-mic" id="bMic" style="display:none"><svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3" stroke="currentColor" fill="none"/></svg>麥克風</span>
+      <span class="sbadge sbadge-diarize" id="bDiarize" style="display:none"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><circle cx="9" cy="7" r="4" stroke="currentColor" fill="none" stroke-width="1.5"/><path d="M23 21v-2a4 4 0 0 0-3-3.87" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>講者辨識</span>
+      <span class="sbadge sbadge-summarize" id="bSummarize" style="display:none"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 8h8M8 12h8M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>摘要</span>
+    </div>
+    <div class="sbar-right"><span id="sCount">0 句</span><div class="vol-bar" id="volBar"></div></div>
+  </div>
+  <div class="msgs" id="msgs"></div>
+  <div class="bar"><div><button class="stop-btn" id="stopBtn" onclick="stop()">停止 <kbd>S</kbd></button><button class="stop-btn" id="pauseBtn" onclick="togglePause()" style="background:var(--orange);margin-left:8px">暫停 <kbd>P</kbd></button><span class="bar-info" id="bInfo"></span><span class="bar-info" id="bDevices" style="margin-left:8px"></span></div><div><button class="mode-toggle" id="subBtn" onclick="toggleSubMode()">字幕模式 <kbd>T</kbd></button><button class="new-btn" id="newBtn" onclick="toEnd()">新訊息 ↓</button></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id),msgsEl=$('msgs'),dot=$('dot'),newBtn=$('newBtn');
+let cnt=0,aScr=true,ws=null,rTimer=null,startTime=null,timerIv=null,_discShown=false;
+let curCfg={mode:'',modeLabel:'',model:'',engine:'',asrLoc:'',record:false,denoise:false,mic:false};
+let _autoLb='',_autoMic='';
+let _recModels={},_cfgModels=[],_lastModel='';
+function _updateModelRec(mode){const recM=_recModels[mode]||'large-v3-turbo';const prev=cselVal($('iModel'));cselSetItems($('iModel'),_cfgModels.map(m=>{let t=tagFor(m.value,recM,_lastModel);if(m.value===recM&&t!=='前次使用')t='此裝置適合';return{value:m.value,label:m.label,tag:t}}));cselSetValue($('iModel'),prev||_lastModel||recM)}
+const _modeLabels={'en2zh':'英翻中字幕','zh2en':'中翻英字幕','ja2zh':'日翻中字幕','zh2ja':'中翻日字幕','en_zh':'英中雙向字幕','ja_zh':'日中雙向字幕','en':'英文轉錄','zh':'中文轉錄','ja':'日文轉錄','record':'純錄音'};
+const _spkColors=['#ffa550','#64c8ff','#ff96b4','#b4e664','#bea0ff','#fff064','#64f0c8','#ffb4a0'];
+/* Custom Select */
+function cselInit(el){const d=document.createElement('div');d.className='csel-display';d.textContent='選擇...';const dr=document.createElement('div');dr.className='csel-drop';el.appendChild(d);el.appendChild(dr);d.addEventListener('click',e=>{e.stopPropagation();document.querySelectorAll('.csel.open').forEach(s=>{if(s!==el)s.classList.remove('open')});el.classList.toggle('open')})}
+function cselSetItems(el,items,groups){const dr=el.querySelector('.csel-drop');dr.innerHTML='';const add=(item)=>{const d=document.createElement('div');d.className='csel-item';if(item.disabled)d.classList.add('disabled');if(el.dataset.value===item.value&&!item.disabled)d.classList.add('active');let h=item.label;if(item.tag){const tc=item.tag==='不支援此模式'?'tag-disabled':(item.tag==='前次使用'?'tag-last':'tag-default');h+='<span class="tag '+tc+'">'+item.tag+'</span>';}d.innerHTML=h;d.dataset.value=item.value;if(!item.disabled)d.addEventListener('click',()=>{cselSetValue(el,item.value,item.label);el.classList.remove('open');el.dispatchEvent(new Event('change'))});dr.appendChild(d)};if(groups){groups.forEach(g=>{const gh=document.createElement('div');gh.className='csel-group';gh.textContent=g.label;dr.appendChild(gh);g.items.forEach(add)})}else{items.forEach(add)}}
+function cselSetValue(el,value,label){el.dataset.value=value;const d=el.querySelector('.csel-display');if(label){d.textContent=label}else{const item=el.querySelector('.csel-item[data-value="'+CSS.escape(value)+'"]');if(item){const c=item.cloneNode(true);c.querySelectorAll('.tag').forEach(t=>t.remove());d.textContent=c.textContent.trim()}else d.textContent=value}el.querySelectorAll('.csel-item').forEach(i=>{i.classList.toggle('active',i.dataset.value===value)})}
+function cselAddItem(el,v,l){const dr=el.querySelector('.csel-drop');if(dr.querySelector('[data-value="'+CSS.escape(v)+'"]'))return;const d=document.createElement('div');d.className='csel-item';d.textContent=l||v;d.dataset.value=v;d.addEventListener('click',()=>{cselSetValue(el,v,l);el.classList.remove('open');el.dispatchEvent(new Event('change'))});dr.appendChild(d)}
+function cselVal(el){return el.dataset.value||''}
+document.addEventListener('click',()=>{document.querySelectorAll('.csel.open').forEach(s=>s.classList.remove('open'))});
+document.querySelectorAll('.csel').forEach(cselInit);
+/* Theme */
+function toggleTheme(){const d=document.body.classList.toggle('dark');$('tBtn').textContent=d?'淺色主題':'深色主題';localStorage.setItem('t',d?'d':'l')}
+if(localStorage.getItem('t')==='d'){document.body.classList.add('dark');$('tBtn').textContent='淺色主題'}
+/* Helpers */
+function flash(label,cb){const o=document.createElement('div');o.className='flash-overlay';document.body.appendChild(o);if(label){const t=document.createElement('div');t.className='flash-text';t.textContent=label;document.body.appendChild(t);setTimeout(()=>t.remove(),1200)}setTimeout(()=>{if(cb)cb();o.remove()},400)}
+function showToast(msg,type){const t=document.createElement('div');t.className='toast toast-'+(type||'err');t.textContent=msg;document.body.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .3s';setTimeout(()=>t.remove(),300)},4000)}
+function bc(s){return s<2?'bf':s<5?'bm':'bs'}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+msgsEl.addEventListener('scroll',()=>{const{scrollTop,scrollHeight,clientHeight}=msgsEl;const wasAtBottom=aScr;aScr=(scrollHeight-scrollTop-clientHeight)<50;if(!wasAtBottom&&aScr)newBtn.classList.remove('vis');else if(!aScr)newBtn.classList.add('vis')});
+function toEnd(){msgsEl.scrollTop=msgsEl.scrollHeight;aScr=true;newBtn.classList.remove('vis')}
+function startTimer(){startTime=Date.now();if(timerIv)clearInterval(timerIv);timerIv=setInterval(()=>{const s=Math.floor((Date.now()-startTime)/1000);$('sTimer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},1000)}
+function stopTimer(){if(timerIv){clearInterval(timerIv);timerIv=null}}
+let volHist=new Array(20).fill(0);
+function pushVol(v){volHist.push(Math.min(Math.pow(v*20,.6),1));if(volHist.length>20)volHist.shift();const el=$('volBar');el.innerHTML='';volHist.forEach(v=>{const s=document.createElement('span');s.style.height=Math.max(1,v*18)+'px';el.appendChild(s)})}
+pushVol(0);
+/* Config */
+function tagFor(val,def,last){if(val===last)return '前次使用';if(val===def)return '預設';return ''}
+const _modelDesc={'qwen2.5:14b':'品質好，速度快（推薦）','qwen2.5:32b':'品質很好，中日文翻譯推薦','qwen2.5:7b':'品質普通，速度最快','phi4:14b':'Microsoft，品質不錯'};
+function _llmLabel(n){const d=_modelDesc[n];return d?n+' — '+d:n}
+function _llmItems(models,lastV){return models.sort((a,b)=>a.localeCompare(b)).map(m=>({value:m,label:_llmLabel(m),tag:m===lastV?'前次使用':''}))}
+let _selectedFiles=[];
+async function loadCfg(){
+  const r=await fetch('/api/config'),c=await r.json();$('verLabel').textContent='v'+(c.version||'');const L=c.last||{};
+  // Source
+  cselSetItems($('iSource'),[{value:'live',label:'即時音訊擷取',tag:''},{value:'file',label:'讀入音訊檔案（離線處理）',tag:''}]);
+  cselSetValue($('iSource'),'live');$('iSource').addEventListener('change',onSourceChg);
+  // Mode
+  const mG=[];let lg='',cg;c.modes.forEach(m=>{if(m.group!==lg){cg={label:m.group,items:[]};mG.push(cg);lg=m.group}cg.items.push({value:m.value,label:m.label,tag:tagFor(m.value,'en2zh',L.mode)})});
+  cselSetItems($('iMode'),null,mG);cselSetValue($('iMode'),L.mode||'en2zh');
+  // ASR loc
+  const asrI=[{value:'gpu',label:'GPU 伺服器'+(c.gpu_host?' ('+c.gpu_host+')':''),tag:''},{value:'local',label:'本機',tag:''}];
+  cselSetItems($('iAsrLoc'),asrI);cselSetValue($('iAsrLoc'),L.local_asr?'local':(c.gpu_host?'gpu':'local'));
+  // Model, Scene, Engine
+  _recModels=c.recommended_models||{};_cfgModels=c.models;_lastModel=L.model;
+  _updateModelRec(cselVal($('iMode')));
+  cselSetItems($('iScene'),c.scenes.map(s=>({value:s.value,label:s.label,tag:tagFor(s.value,'training',L.scene)})));cselSetValue($('iScene'),L.scene||'training');
+  const defEng=c.default_engine||'llm';
+  _allEngines=c.engines.map(e=>({value:e.value,label:e.label,tag:tagFor(e.value,defEng,L.engine)}));
+  cselSetItems($('iEngine'),_allEngines);cselSetValue($('iEngine'),L.engine||defEng);
+  cselSetItems($('iLlmModel'),c.llm_models.map(m=>({value:m.value,label:m.label,tag:tagFor(m.value,'qwen2.5:14b',L.llm_model)})));cselSetValue($('iLlmModel'),L.llm_model||c.llm_model||'qwen2.5:14b');
+  if(L.llm_host)$('iLlmHost').value=L.llm_host;else if(c.llm_host)$('iLlmHost').value=c.llm_host;
+  // Devices
+  const devI=[{value:'',label:'自動偵測',tag:''}];if(c.devices)c.devices.forEach(d=>devI.push({value:String(d.id),label:'['+d.id+'] '+d.name,tag:''}));
+  cselSetItems($('iDevice'),devI);cselSetValue($('iDevice'),'');cselSetItems($('iMicDev'),devI);cselSetValue($('iMicDev'),'');
+  if(c.gpu_host){/*keep gpu*/}else{cselSetValue($('iAsrLoc'),'local')}
+  // 顯示自動偵測的裝置
+  _autoLb=c.auto_loopback?c.auto_loopback.replace(/^\[\d+\]\s*/,''):'';
+  _autoMic=c.auto_mic?c.auto_mic.replace(/^\[\d+\]\s*/,''):'';
+  if(c.auto_loopback)$('devAutoLb').innerHTML='<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(13,110,253,.1);color:var(--accent);padding:4px 10px;border-radius:6px;font-size:12px;line-height:1"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;flex-shrink:0;vertical-align:middle"><path d="M1 13.9V10.1C1 9 1.9 8.1 3 8.1H5.9L12.4 4C13.1 3.6 14 4.1 14 4.9V19.1C14 19.9 13.1 20.4 12.4 20L6.5 16H3C1.9 16 1 15 1 13.9Z"/><path d="M17.5 7.5C17.5 7.5 19 9 19 11.5S17.5 15.5 17.5 15.5" stroke-linecap="round"/></svg><span>自動偵測 → <b>'+c.auto_loopback.replace(/^\[\d+\]\s*/,'')+'</b></span></span>';
+  if(c.auto_mic)$('devAutoMic').innerHTML='<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(25,135,84,.1);color:var(--green);padding:4px 10px;border-radius:6px;font-size:12px;line-height:1"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;flex-shrink:0;vertical-align:middle"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10V11C5 14.9 8.1 18 12 18S19 14.9 19 11V10" stroke-linecap="round"/></svg><span>自動偵測 → <b>'+c.auto_mic.replace(/^\[\d+\]\s*/,'')+'</b></span></span>';
+  if(L.record)$('iRec').checked=true;if(L.mic)$('iMic').checked=true;if(L.denoise!==undefined)$('iDenoise').checked=!!L.denoise;
+  // 離線處理選項
+  if(L.diarize){$('iDiarize').checked=true;onDiarizeChg()}
+  if(L.num_speakers>0)$('iNumSpk').value=L.num_speakers;
+  if(L.summarize){$('iSummarize').checked=true;onSummarizeChg()}
+  if(c.summary_descs)_sumDescs=c.summary_descs;
+  _updateSumModels(c.llm_models.map(m=>m.value));cselSetValue($('iSumModel'),L.summary_model||'');
+  engChg();$('iMode').addEventListener('change',()=>{engChg();_updateModelRec(cselVal($('iMode')))});$('iEngine').addEventListener('change',engChg);
+  const st=await(await fetch('/api/status')).json();if(st.running)showLive();
+  $('cfgLoading').style.display='none';$('cfgCard').style.opacity='1';
+}
+function onSourceChg(){const isFile=cselVal($('iSource'))==='file';$('fileArea').classList.toggle('show',isFile);$('rDevices').style.display=isFile?'none':'';$('rScene').style.display=isFile?'none':'';$('rOffline').style.display=isFile?'':'none';$('rAsrLoc').style.display=isFile?'':'';$('iDenoise').parentElement.style.display=isFile?'none':'';$('iRec').parentElement.style.display=isFile?'none':'';$('iMic').parentElement.style.display=isFile?'none':'';$('asrHint').textContent=isFile?'選擇辨識模式與引擎。雙向模式建議使用耳麥避免影響。':'選擇辨識模式與引擎。雙向模式建議使用耳麥避免影響。場景的緩衝長度越長句子越完整，越短反應越即時。';if(isFile)loadFiles()}
+function onDiarizeChg(){$('rNumSpk').style.display=$('iDiarize').checked?'':'none'}
+function onSummarizeChg(){$('rSumModel').style.display=$('iSummarize').checked?'':'none'}
+let _allFiles=[];
+async function loadFiles(){
+  const r=await fetch('/api/files'),d=await r.json();_allFiles=d.files||[];_selectedFiles=[];$('fileFilter').value='';renderFiles()
+}
+function renderFiles(filter){
+  const fl=$('fileList');fl.innerHTML='';const kw=(filter||'').toLowerCase();
+  const list=kw?_allFiles.filter(f=>f.name.toLowerCase().includes(kw)):_allFiles;
+  if(!list.length){fl.innerHTML='<div style="padding:12px;color:var(--text-dim);text-align:center">'+(kw?'無符合的檔案':'recordings/ 目錄無音訊檔案')+'</div>';return}
+  list.forEach(f=>{const div=document.createElement('div');div.className='file-item';
+    const isSel=_selectedFiles.includes(f.path);if(isSel)div.classList.add('sel');
+    div.innerHTML='<input type="checkbox"'+(isSel?' checked':'')+'>  <span class="file-name">'+esc(f.name)+'</span><span class="file-size">'+f.size+' MB</span>';
+    const cb=div.querySelector('input');cb.addEventListener('change',()=>{if(cb.checked){if(!_selectedFiles.includes(f.path))_selectedFiles.push(f.path);div.classList.add('sel')}else{_selectedFiles=_selectedFiles.filter(p=>p!==f.path);div.classList.remove('sel')}});
+    div.addEventListener('click',e=>{if(e.target.tagName!=='INPUT'){cb.checked=!cb.checked;cb.dispatchEvent(new Event('change'))}});fl.appendChild(div)})
+}
+function filterFiles(){renderFiles($('fileFilter').value)}
+// Upload
+const uz=$('uploadZone'),ui=$('uploadInput');
+uz.addEventListener('dragover',e=>{e.preventDefault();uz.classList.add('drag')});uz.addEventListener('dragleave',()=>uz.classList.remove('drag'));
+uz.addEventListener('drop',e=>{e.preventDefault();uz.classList.remove('drag');uploadFiles(e.dataTransfer.files)});
+ui.addEventListener('change',()=>{if(ui.files.length)uploadFiles(ui.files)});
+async function uploadFiles(files){for(const f of files){const fd=new FormData();fd.append('file',f);uz.textContent='上傳中: '+f.name+'...';try{const r=await fetch('/api/upload-file',{method:'POST',body:fd});const d=await r.json();if(d.ok){showToast(d.name+' 上傳成功（'+d.size+' MB）','ok');loadFiles()}else{showToast('上傳失敗: '+d.error,'err')}}catch(e){showToast('上傳失敗: '+e.message,'err')}}uz.textContent='拖曳音訊/影片檔案到此處，或點按選擇檔案'}
+let _llmQueried=false;
+let _allEngines=[];
+function engChg(){
+  const m=cselVal($('iMode')),isT=['en','zh','ja','record'].includes(m),isRec=m==='record',isFile=cselVal($('iSource'))==='file';
+  $('rEngine').style.display=isT?'none':'';
+  // 純錄音：只需模式 + 裝置
+  $('rModelScene').style.display=isRec?'none':'';
+  $('rOther').style.display=isRec?'none':'';
+  if(isRec){$('rAsrLoc').style.display='none';$('rOffline').style.display='none'}
+  else{$('rOffline').style.display=isFile?'':'none'}
+  // 根據模式標記不支援的引擎（反灰 + 不可選）
+  const noArgos=['en_zh','ja_zh','zh2en','ja2zh','zh2ja'].includes(m);
+  if(_allEngines.length){
+    const items=_allEngines.map(e=>{
+      const disabled=noArgos&&e.value==='argos';
+      return{value:e.value,label:e.label,tag:disabled?'不支援此模式':e.tag,disabled};
+    });
+    const prev=cselVal($('iEngine'));
+    cselSetItems($('iEngine'),items);
+    if(items.some(e=>e.value===prev&&!e.disabled))cselSetValue($('iEngine'),prev);
+    else{const first=items.find(e=>!e.disabled);if(first)cselSetValue($('iEngine'),first.value)}
+  }
+  const showLlm=cselVal($('iEngine'))==='llm'&&!isT;
+  $('llmArea').classList.toggle('show',showLlm);
+  if(showLlm&&!_llmQueried){const h=$('iLlmHost').value.trim();if(h){_llmQueried=true;fetchLlmModels(h)}}
+}
+let _sumDescs={};
+function _sumLabel(m){const d=_sumDescs[m];return d?m+' — '+d:m}
+function _updateSumModels(models){const prev=cselVal($('iSumModel'));const items=[{value:'',label:'預設（gpt-oss:120b）',tag:''}];models.sort((a,b)=>a.localeCompare(b)).forEach(m=>items.push({value:m,label:_sumLabel(m),tag:m===prev?'前次使用':''}));cselSetItems($('iSumModel'),items);if(prev)cselSetValue($('iSumModel'),prev)}
+async function fetchLlmModels(h){try{const r=await fetch('/api/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})});const d=await r.json();if(d.ok&&d.models.length){const p=cselVal($('iLlmModel'));cselSetItems($('iLlmModel'),_llmItems(d.models,p));if(p)cselSetValue($('iLlmModel'),p);_updateSumModels(d.models)}}catch(e){}}
+async function testLlm(){const h=$('iLlmHost').value.trim();$('testResult').innerHTML='<span style="color:var(--text-dim)">測試中...</span>';$('testBtn').disabled=true;_llmQueried=false;try{const r=await fetch('/api/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})});const d=await r.json();if(d.ok){$('testResult').innerHTML='<span class="test-ok">連線成功（'+d.server_type+'，'+d.models.length+' 個模型）</span>';if(d.models.length){const p=cselVal($('iLlmModel'));cselSetItems($('iLlmModel'),_llmItems(d.models,p));if(p)cselSetValue($('iLlmModel'),p);_llmQueried=true;_updateSumModels(d.models)}}else{$('testResult').innerHTML='<span class="test-err">'+esc(d.error)+'</span>'}}catch(e){$('testResult').innerHTML='<span class="test-err">'+esc(e.message)+'</span>'}$('testBtn').disabled=false}
+/* Start/Stop */
+async function go(){
+  const mode=cselVal($('iMode')),isFile=cselVal($('iSource'))==='file';
+  const asrLoc=cselVal($('iAsrLoc'))==='local'?'本機':'GPU 伺服器';
+  const eng=cselVal($('iEngine')),needLlm=eng==='llm'&&!['en','zh','ja','record'].includes(mode);
+  // 防呆檢查
+  if(isFile&&!_selectedFiles.length){showToast('請先選擇至少一個音訊檔案','err');return}
+  if(needLlm&&!$('iLlmHost').value.trim()){showToast('使用 LLM 翻譯引擎需填寫 LLM 主機地址','err');return}
+  if(needLlm&&!cselVal($('iLlmModel'))){showToast('請先測試連線並選擇 LLM 模型','err');return}
+  if(isFile&&$('iSummarize').checked&&!$('iLlmHost').value.trim()){showToast('產生摘要需要 LLM 伺服器，請填寫 LLM 主機地址','err');return}
+  // 檢查是否已在執行
+  try{const st=await(await fetch('/api/status')).json();if(st.running){showToast('已有處理正在執行中，請先停止再重新啟動','err');return}}catch(e){}
+  curCfg={mode,modeLabel:_modeLabels[mode]||mode,model:cselVal($('iModel')),engine:eng,asrLoc,isFile,record:$('iRec').checked,denoise:$('iDenoise').checked,mic:$('iMic').checked,diarize:isFile&&$('iDiarize').checked,summarize:isFile&&$('iSummarize').checked};
+  $('goBtn').disabled=true;$('goBtn').textContent='啟動中...';
+  try{const b={mode,model:cselVal($('iModel')),scene:cselVal($('iScene')),engine:cselVal($('iEngine')),llm_model:cselVal($('iLlmModel')),llm_host:$('iLlmHost').value,topic:$('iTopic').value,record:$('iRec').checked,mic:$('iMic').checked,denoise:$('iDenoise').checked,local_asr:cselVal($('iAsrLoc'))==='local',device:cselVal($('iDevice'))||null};
+  if(isFile&&_selectedFiles.length){b.input_files=_selectedFiles;if($('iDiarize').checked){b.diarize=true;const ns=parseInt($('iNumSpk').value)||0;if(ns>0)b.num_speakers=ns}if($('iSummarize').checked){b.summarize=true;const sm=cselVal($('iSumModel'));if(sm)b.summary_model=sm}}
+  const r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const d=await r.json();
+  if(d.status==='started'){showLive();$('hMode').textContent=curCfg.modeLabel}}catch(e){showToast('啟動失敗: '+e.message,'err')}
+  $('goBtn').disabled=false;$('goBtn').textContent='開始';
+}
+let _stopConfirm=false;
+async function stop(){
+  if(!_stopConfirm){_stopConfirm=true;$('stopBtn').innerHTML='確認停止? <kbd>S</kbd>';$('stopBtn').style.background='#b71c1c';setTimeout(()=>{if(_stopConfirm){_stopConfirm=false;$('stopBtn').innerHTML='停止 <kbd>S</kbd>';$('stopBtn').style.background=''}},3000);return}
+  _stopConfirm=false;flash('停止',async()=>{const b=$('stopBtn');b.disabled=true;b.textContent='停止中...';await fetch('/api/stop',{method:'POST'})})
+}
+let _paused=false;
+function togglePause(){const next=!_paused;flash(next?'暫停':'繼續',()=>{_paused=next;$('pauseBtn').innerHTML=_paused?'繼續 <kbd>P</kbd>':'暫停 <kbd>P</kbd>';$('pauseBtn').style.background=_paused?'var(--green)':'var(--orange)';if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({action:_paused?'pause':'resume'}))})}
+function toggleSubMode(){const entering=!$('pLive').classList.contains('sub-mode');flash(entering?'字幕模式':'對話模式',()=>{const p=$('pLive');p.classList.toggle('sub-mode');$('subBtn').classList.toggle('active');$('subBtn').innerHTML=p.classList.contains('sub-mode')?'對話模式 <kbd>T</kbd>':'字幕模式 <kbd>T</kbd>';if(p.classList.contains('sub-mode')){const ms=msgsEl.querySelectorAll('.m:not(.leaving)');const arr=[...ms];while(arr.length>2)arr.shift().remove()}})}
+function showLive(){$('pSetup').style.display='none';$('pLive').classList.add('on');document.body.classList.add('has-live');
+  const isBidi=['en_zh','ja_zh'].includes(curCfg.mode);$('pLive').classList.toggle('bidi',isBidi);
+  msgsEl.innerHTML='';cnt=0;_discShown=false;$('hCount').textContent='';$('sCount').textContent='0 句';
+  $('hMode').textContent=curCfg.modeLabel;$('sMode').textContent=curCfg.modeLabel;$('sModel').textContent=curCfg.model+' @ '+curCfg.asrLoc;
+  const hasEng=curCfg.engine&&!['en','zh','ja','record'].includes(curCfg.mode);
+  const _eLbl=hasEng?(curCfg.engine==='llm'?'LLM: '+cselVal($('iLlmModel')):curCfg.engine.toUpperCase()):'';
+  $('sEngine').textContent=_eLbl;$('bTrans').style.display=hasEng?'inline-flex':'none';
+  $('bRec').style.display=curCfg.record?'inline-flex':'none';$('bDenoise').style.display=curCfg.denoise?'inline-flex':'none';$('bMic').style.display=curCfg.mic?'inline-flex':'none';
+  $('bDiarize').style.display=curCfg.diarize?'inline-flex':'none';$('bSummarize').style.display=curCfg.summarize?'inline-flex':'none';
+  // 裝置資訊（可點按膠囊，靜音/恢復）— 檔案模式不顯示
+  let _dvh='';
+  if(!curCfg.isFile){
+  if(_autoLb)_dvh+='<span class="sbadge dev-badge" id="devLbBadge" onclick="toggleDevMute(this,\'lb\')" title="點按靜音/恢復系統音訊" style="background:rgba(13,110,253,.1);color:var(--accent);cursor:pointer"><svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.5"><path d="M1 13.9V10.1C1 9 1.9 8.1 3 8.1H5.9L12.4 4C13.1 3.6 14 4.1 14 4.9V19.1C14 19.9 13.1 20.4 12.4 20L6.5 16H3C1.9 16 1 15 1 13.9Z"/><path d="M17.5 7.5C17.5 7.5 19 9 19 11.5S17.5 15.5 17.5 15.5" stroke-linecap="round"/></svg> '+_autoLb+'</span> ';
+  if(_autoMic)_dvh+='<span class="sbadge dev-badge" id="devMicBadge" onclick="toggleDevMute(this,\'mic\')" title="點按靜音/恢復麥克風" style="background:rgba(25,135,84,.1);color:var(--green);cursor:pointer"><svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.5"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10V11C5 14.9 8.1 18 12 18S19 14.9 19 11V10" stroke-linecap="round"/></svg> '+_autoMic+'</span>';
+  }
+  $('bDevices').innerHTML=_dvh;
+  $('pauseBtn').style.display=curCfg.isFile?'none':'';
+  startTimer();const b=$('stopBtn');b.disabled=false;b.innerHTML='停止 <kbd>S</kbd>'}
+async function tryBackToSetup(){
+  try{const r=await fetch('/api/status',{signal:AbortSignal.timeout(2000)});if(r.ok){showSetup();return}}catch(e){}
+  showToast('WebUI 伺服器已離線，請重新執行 ./start.sh --webui','err');
+}
+function showSetup(){$('pSetup').style.display='flex';$('pLive').classList.remove('on');document.body.classList.remove('has-live');dot.classList.remove('on');$('hMode').textContent='--';$('hCount').textContent='';stopTimer()}
+function showDisconnected(msg){
+  stopTimer();dot.classList.remove('on');const d=document.createElement('div');d.className='disc-msg';
+  let h='<div class="disc-title">'+esc(msg)+'</div>';
+  if(curCfg.record)h+='<div style="margin-top:6px;font-size:12px;color:var(--text-dim)">錄音檔已儲存於 recordings/ 目錄</div>';
+  h+='<button onclick="tryBackToSetup()" style="margin-top:12px;padding:7px 24px;border:none;border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font-size:13px">回到設定</button>';
+  d.innerHTML=h;msgsEl.appendChild(d);if(aScr)requestAnimationFrame(()=>{msgsEl.scrollTop=msgsEl.scrollHeight});
+  const b=$('stopBtn');b.disabled=false;b.textContent='停止'}
+/* Messages */
+let _msgQueue=[],_msgTimer=null;
+function _flushMsgs(){_msgTimer=null;while(_msgQueue.length){_renderMsg(_msgQueue.shift())}}
+function addMsg(ev){_msgQueue.push(ev);if(!_msgTimer)_msgTimer=setTimeout(_flushMsgs,80)}
+function _renderMsg(ev){dot.classList.add('on');cnt++;$('hCount').textContent=cnt+' 句';$('sCount').textContent=cnt+' 句';if(ev.rms!=null)pushVol(ev.rms);const isO=(ev.source==='loopback'||ev.source==='main');const d=document.createElement('div');d.className='m '+(isO?'o':'s');
+  let asrBadge=ev.asr_time!=null?'<span class="b '+bc(ev.asr_time)+'">辨 '+ev.asr_time+'s</span> ':'';
+  let trBadge=ev.translate_time!=null?'<span class="b '+bc(ev.translate_time)+'">譯 '+ev.translate_time+'s</span> ':'';
+  const spkHtml=ev.speaker?'<div><span class="m-spk" style="background:'+_spkColors[(ev.speaker-1)%8]+'">Speaker '+ev.speaker+'</span></div>':'';
+  let h=spkHtml+'<div class="m-t">'+(ev.timestamp||'')+'</div>';
+  h+='<div class="m-s">'+asrBadge+'<span class="m-lang m-lang-src">'+esc(ev.src_lang||'')+'</span><span class="m-text">'+esc(ev.src_text)+'</span></div>';
+  if(ev.dst_text)h+='<div class="m-d">'+trBadge+'<span class="m-lang m-lang-dst">'+esc(ev.dst_lang||'')+'</span><span class="m-text">'+esc(ev.dst_text)+'</span></div>';d.innerHTML=h;
+  // 字幕模式：保留最近 2 個，直接移除舊的
+  if($('pLive').classList.contains('sub-mode')){
+    while(msgsEl.children.length>=2)msgsEl.children[0].remove();
+  }
+  msgsEl.appendChild(d);
+  if(aScr)requestAnimationFrame(()=>{msgsEl.scrollTop=msgsEl.scrollHeight})}
+/* WS */
+function conn(){const p=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(p+'//'+location.host+'/ws');ws.onopen=()=>{if(rTimer){clearInterval(rTimer);rTimer=null}};
+  ws.onmessage=e=>{try{const ev=JSON.parse(e.data);if(ev.type==='transcription')addMsg(ev);else if(ev.type==='started'){curCfg.modeLabel=_modeLabels[ev.mode]||ev.mode;curCfg.mode=ev.mode;showLive();dot.classList.add('on')}else if(ev.type==='stopped')showSetup();else if(ev.type==='disconnected'){dot.classList.remove('on');showDisconnected(ev.message||'主程式已結束')}else if(ev.type==='rms'&&ev.value!=null)pushVol(ev.value);else if(ev.type==='progress'){$('bInfo').textContent=ev.stage+(ev.detail?' — '+ev.detail:'')}}catch(x){}};
+  ws.onclose=()=>{dot.classList.remove('on');if($('pLive').classList.contains('on')&&!_discShown){_discShown=true;showDisconnected('與伺服器的連線已中斷')}if(!rTimer)rTimer=setInterval(()=>{if(!ws||ws.readyState===WebSocket.CLOSED)conn()},3000)};ws.onerror=()=>ws.close()}
+// Tooltips
+const _tips={iSource:'選擇即時擷取系統音訊，或讀入音訊檔案進行離線處理',iMode:'選擇翻譯方向或轉錄語言。雙向模式需使用耳機',iAsrLoc:'GPU 伺服器辨識速度快；本機不需網路但較慢',iModel:'較大的模型準確度較高但速度較慢',iScene:'緩衝長度越長句子越完整，越短反應越即時',iEngine:'LLM 品質最好需伺服器，NLLB/Argos 為本機離線',iLlmHost:'Ollama 或 OpenAI 相容伺服器的 IP:Port',iLlmModel:'選擇 LLM 伺服器上的翻譯模型',testBtn:'測試 LLM 伺服器連線並載入可用模型清單',iDevice:'擷取電腦播放的聲音（BlackHole / WASAPI Loopback）',iMicDev:'擷取本機麥克風或耳機的輸入',iTopic:'填寫會議主題可提升翻譯的上下文準確度',iRec:'同時將音訊錄製為檔案，儲存於 recordings/ 目錄',iMic:'同時轉錄麥克風輸入（ASR 負載加倍）',iDenoise:'啟用背景降噪（適合嘈雜環境，安靜環境可不勾）',goBtn:'啟動即時辨識或離線處理',stopBtn:'停止目前的辨識工作（按兩次確認）',pauseBtn:'暫停或繼續辨識（快捷鍵 P）',subBtn:'切換對話模式與字幕模式（快捷鍵 T）'};
+Object.entries(_tips).forEach(([id,tip])=>{const el=$(id);if(el)el.title=tip});
+loadCfg();conn();
+// 裝置靜音切換
+function toggleDevMute(el,type){
+  el.classList.toggle('muted');
+  const muted=el.classList.contains('muted');
+  if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({action:'mute',device:type,muted}));
+  showToast((type==='lb'?'系統音訊':'麥克風')+(muted?' 已靜音':' 已恢復'),'ok');
+}
+// 熱鍵：S=停止 P=暫停/繼續 T=切換字幕/對話
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(!$('pLive').classList.contains('on'))return;
+  if(e.key==='s'||e.key==='S')stop();
+  else if(e.key==='p'||e.key==='P')togglePause();
+  else if(e.key==='t'||e.key==='T')toggleSubMode();
+});
+</script>
+</body>
+</html>
