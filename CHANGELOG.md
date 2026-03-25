@@ -1,5 +1,179 @@
 # Changelog
 
+### v2.15.5 (2026-03-25)
+
+**改進**
+- install.sh / install.ps1 faster-whisper 模型改為全部預下載（base.en、base、small.en、small、large-v3-turbo），不再依硬體選擇性下載
+- install.ps1 faster-whisper 模型下載依有無 GPU 自動選擇預設模型（有 GPU → large-v3-turbo，無 GPU → small），section 標題動態顯示
+- 移除 medium.en / medium 模型選項（WHISPER_MODELS、WebUI 下拉選單、SOP 說明），新增 base 多語言模型
+- WebUI 模型排序更新（移除 medium 層級）
+
+**修正**
+- install.sh / install.ps1 faster-whisper 模型下載 401 失敗時自動嘗試其他 repo（mobiuslabsgmbh → Systran → deepdml），靜默切換不顯示錯誤，全部失敗才提示
+
+### v2.15.4 (2026-03-24)
+
+**修正**
+- install.sh 補上缺少的 `check_notice()` 函式定義（升級後首次安裝報 command not found）
+- install.sh / install.ps1 Argos 模型下載加入 SSL 憑證驗證失敗自動重試（企業網路相容）
+- README.md 目錄結構補上 subtitle_overlay.py
+
+### v2.15.3 (2026-03-22)
+
+**新功能**
+- 關鍵字即時通知：設定關鍵字，即時辨識出現時自動通知。可用於追蹤會議重點、開會時提醒留意關鍵議題，或線上課程摸魚時讓系統在講師說到「請實作」「這個會考」時自動提醒
+  - WebUI 全螢幕警示特效（紅金交替閃爍 + 中央大字 ⚠ 脈衝動畫，遊戲風格）
+  - 瀏覽器桌面推播通知（Notification API，即使在背景也看得到）
+  - WebUI 音效提示，可選兩種風格：警示音（核爆風格低頻嗡鳴+高低交替警報）或柔和音（三連遞增音）
+  - 懸浮字幕視窗邊框金黃色閃爍（3 次閃爍動畫）
+  - 同一關鍵字冷卻機制（可設定秒數，預設 30 秒內不重複通知）
+  - 不分大小寫，同時比對原文和譯文，關鍵字前後空格自動去除
+  - WebUI 訊息列顯示金黃色關鍵字提醒標記
+- WebUI 新增「關鍵通知」設定區塊（僅本機顯示）：關鍵字輸入、冷卻時間、通知方式開關、音效風格選擇
+- 字幕轉發功能：即時字幕自動轉發到通訊平台，每隔指定秒數發送一次累積字幕
+  - 支援 7 個平台：Telegram（Bot API）、Slack（Webhook）、Discord（Webhook，自動分段 2000 字）、Teams（Webhook）、LINE（Messaging API）、Nextcloud Talk（OCS API）、通用 API（自訂 URL + Body 範本）
+  - 可同時啟用多個平台，各自獨立設定認證資訊
+  - 發送間隔可調（最低 5 秒），段落間自動空行分隔
+  - 可選擇發送內容：含時間戳 / 含原文 / 含譯文（預設原文+譯文）
+  - 通用 API 支援 Body 範本：用 `{{text}}` 變數代入字幕，填 JSON 格式自動設定 Content-Type，可搭配自訂 Headers（如 Authorization）
+  - 設定存於 config.json `subtitle_forward`，下次啟動自動生效
+- WebUI 新增「字幕轉發」設定區塊（僅本機顯示）
+  - 各平台卡片含品牌色 icon（Telegram 藍、Slack 多色、Discord 紫、Teams 紫、LINE 綠、Nextcloud 藍、通用 API 程式碼 icon）
+  - 「儲存設定」+「測試發送」按鈕，測試發送會逐一驗證所有已啟用平台
+- 即時模式上方狀態列新增「轉發」膠囊（青色，顯示已啟用的平台名稱如「轉發 TG+Discord」）
+- 懸浮字幕功能：桌面半透明字幕覆蓋視窗（PyQt6），可疊加於任何應用程式上方（感謝 OSSLab 熊大提供建議）
+  - 字體依視窗大小自動縮放，最小不低於下限，容不下則換行
+  - 可拖曳定位、位置自動記憶、滑鼠穿透模式
+  - 系統匣圖示右鍵選單、字幕切換淡入淡出動畫、永遠置頂
+  - macOS 原生視窗層級（NSStatusWindowLevel）確保在所有視窗之上
+  - 啟動時自動清除前次殘留程序，程式結束時一併終止（含 Ctrl+C / os._exit）
+- WebUI 新增「懸浮字幕」設定區塊（僅本機顯示）：透明度 slider、滑鼠穿透、純轉錄單行
+- 純轉錄模式（英文/中文/日文）支援 LLM 自動校正逐字稿：有設定 LLM 伺服器時自動啟用
+- 離線處理摘要選項新增「只校正逐字稿（不產出摘要）」
+- 離線處理可選是否產生 SRT / VTT 字幕檔（WebUI checkbox）
+- WebUI 離線處理完成時顯示產出檔案連結（膠囊按鈕）+ 「開啟資料夾」按鈕
+- 離線處理新增 VTT (WebVTT) 字幕檔輸出（與 SRT 同時產出）
+- LLM 校正逐字稿串流即時推送：校正結果逐行送到 WebUI
+- WebUI 設定頁 ↔ 字幕頁滑動淡入淡出轉場動畫
+- WebUI 所有設定區塊支援收摺/展開（點按標題列）
+- WebUI 載入時顯示各步驟進度文字
+- install.sh / install.ps1 新增 PyQt6 必裝項目（懸浮字幕用）
+- 計時器從狀態列移至頂端標題列
+
+**改進**
+- WebUI 設定頁標題改為「開始使用」（火箭 icon）
+- WebUI「離線處理選項」精簡為「離線處理」
+- WebUI「摘要模型」改為「摘要 / 校正模型」、「產生摘要」改為「產生摘要與校正逐字稿」
+- WebUI 底部控制列垂直置中
+- 摘要 prompt 要求校正逐字稿分段（每段 3-8 句）
+- 摘要 HTML 超長段落自動每 5 句分段
+- 懸浮字幕不顯示語言標籤（[EN] [中]），直接顯示原文和譯文
+- 按「開始」時自動儲存字幕轉發、關鍵通知、懸浮字幕的啟用狀態（不需另外按儲存）
+- 字型改用系統預設（避免 macOS 搜尋 Microsoft JhengHei 耗時 300ms+）
+- WebUI 標題列計時器改為七段顯示器風格（LED 青色光暈 + 暗影底字 + 漸層背景），超過 1 小時自動切換 H:MM:SS 格式
+- WebUI 標題列移除句數顯示（第二列已有）
+- WebUI 辨識模型下拉選單智慧提示：不支援的 .en 模型自動停用、效能不足的模型標示「此裝置速度可能較慢」
+- install.ps1 whisper.cpp 模型 large-v3-turbo 改為自動下載（多語言辨識必備）
+- 懸浮字幕單語模式自動縮短高度（42px），動態偵測雙語切換（80px），單語時隱藏空白原文行
+- 懸浮字幕支援拖拉改變視窗大小（邊緣游標自動變化），X 按鈕隨 resize 更新位置
+- 懸浮字幕外框間距縮減（更緊湊）
+- 字幕轉發 / 懸浮字幕 SSL 憑證驗證失敗時自動停用驗證重試（企業網路相容）
+
+**修正**
+- 懸浮字幕 crossfade 動畫堆疊：快速更新字幕時先停止舊動畫再啟動新動畫
+- 懸浮字幕 flash border timer 堆疊：快速觸發關鍵字時先停止舊 timer
+- WebUI 收摺動畫快速連按 race condition：動畫期間忽略重複操作
+- webui.py `_monitor` thread race condition：用本地變數保留程序參照避免 AttributeError
+- translate_meeting.py overlay atexit lambda 改用全域 `_overlay_proc_ref` 避免殘留程序
+- webui.py 停止時一併終止懸浮字幕子程序
+- webui.py Ctrl+C 強制退出（signal handler 直接 os._exit）
+- install.ps1 whisper.cpp 編譯：非 CUDA 模式明確設定 `-DGGML_CUDA=OFF`
+- install.ps1 whisper.cpp CUDA 編譯失敗自動降級 CPU：擴大偵測範圍
+- install.ps1 CUDA Toolkit 偵測改用 nvcc.exe 驗證
+- LLM 校正逐字稿翻譯配對保護：原文 [EN] 行有配對譯文時不被誤刪為雜音
+- WebUI 離線處理完成時清空底部狀態列（停止 spinner 旋轉）
+- 中文幻覺過濾新增「字幕by」「字幕BY」
+- WebUI 第一筆字幕到達時自動清除底部「載入中」狀態
+
+### v2.14.6 (2026-03-20)
+
+**修正**
+- install.ps1 nvidia-smi 偵測強化：新增 SysNative 路徑（修正 32-bit PowerShell 下 WoW64 目錄重定向問題）
+- install.ps1 GPU 偵測 fallback：當 nvidia-smi 不在 PATH 時，透過 where.exe、驅動安裝路徑（WMI InstalledDisplayDrivers）、登錄檔（NvSmi）三種額外方式搜尋
+- 修正 Developer PowerShell for VS 等非標準環境下有 NVIDIA GPU + CUDA 卻安裝 CPU 版 PyTorch 的問題
+
+### v2.14.5 (2026-03-20)
+
+**改進**
+- WebUI 上方狀態列新增「場景」膠囊（如「訓練 8s」），離線模式不顯示
+- WebUI 「錄音中」「降噪」膠囊移至底部控制列（裝置膠囊右側），上方空間更簡潔
+- WebUI Header 新增「即時模式」/「離線處理」標籤（模式名稱旁）
+- WebUI 底部狀態列有處理進度時自動顯示 spinner 動畫
+- WebUI 多次摘要功能暫時隱藏（整合品質不穩定）
+
+**修正**
+- NLLB 模型載入失敗自動修復：偵測 config.json 缺失時自動從 HuggingFace 重新下載（新版 ctranslate2 需要此檔案）
+- 摘要標題格式自動修正：LLM 輸出 `### 最終摘要` 等非標準格式時自動修正為 `## 重點摘要` / `## 校正逐字稿`
+- 摘要缺少校正逐字稿時自動補發 LLM 請求（與重點摘要缺失的補發機制對齊）
+- 辨識結果 0 段時終端機和 WebUI 提示可能原因（功能模式選錯、音訊靜音、品質太差）
+- WebUI 離線處理模式不再顯示「錄音中」「降噪」「麥克風」膠囊
+- WebUI 雙向模式切回其他模式時 GPU 伺服器選項可正確選擇（修正 `_asrLastVal` 追蹤邏輯）
+- 終端機摘要狀態列視窗大小改變時不再殘影（改善 scroll region resize 邏輯）
+- install.ps1 nvidia-smi 執行失敗時顯示路徑和 exit code 協助診斷
+
+
+
+**改進**
+- WebUI 按鈕加 SVG icon：開始（播放三角形）、密碼顯示/隱藏（眼睛）、儲存密碼（磁碟片）
+- WebUI 所有輸入框與按鈕加 tooltip（30 個）
+- install.ps1 nvidia-smi 路徑 fallback（搜尋 System32 和 NVSMI 目錄）
+- install.ps1 GPU 偵測失敗時透過 WMI 診斷是否有 NVIDIA 裝置，提示更新驅動
+- webui.py Ctrl+C 退出不再顯示 PyTorch atexit 錯誤（os._exit）
+- README.md / SOP.md 目錄結構補齊 webui.py、webui.html 等檔案
+
+### v2.14.4 (2026-03-19)
+
+**新功能**
+- WebUI 安全設定：唯讀密碼（遠端觀看字幕用）+ 管理密碼（遠端操作控制用），本機不需密碼
+- WebUI 自訂密碼對話框（不使用瀏覽器原生 prompt），密碼欄位支援顯示/隱藏切換
+- WebUI 遠端唯讀模式：不顯示設定頁，直接進字幕頁或等待畫面，隱藏停止/暫停/裝置控制
+- WebUI 遠端單次密碼輸入：自動判斷角色（管理密碼→admin、唯讀密碼→read）
+- WebSocket 連線驗證：遠端需 token 才能接收字幕串流
+
+**改進**
+- WebUI 未勾選「轉錄麥克風」時底部麥克風裝置膠囊顯示 disable 狀態
+- WebUI 停止時顯示「正在停止」「存檔中 — WAV → MP3」等錄音轉檔進度
+- WebUI 英文/中文/日文純轉錄模式（whisper.cpp 引擎）補上 `_webui_send`，修正字幕不出現問題
+- WebUI 所有 API fetch 統一帶 auth token，修正唯讀模式載入卡住問題
+- 中文幻覺過濾加強：字幕視聽者、音樂版權歸屬（李宗盛等，短句限定避免誤殺）
+- 英文幻覺過濾加強：amara.org、subtitles by、transcribed by 等
+- 日文幻覺過濾加強：字幕提供、翻訳者、Amara
+
+### v2.14.3 (2026-03-19)
+
+**新功能**
+- WebUI 即時切換音訊裝置：點按底部裝置膠囊彈出 popup，可靜音/恢復或切換系統音訊/麥克風裝置（自動重啟子程序，約 2-3 秒中斷）
+- WebUI 裝置 popup 自動刷新裝置清單（每次開啟時查詢最新裝置）
+- translate_meeting.py 新增 `--mic-device ID` 參數，可指定麥克風裝置
+
+**改進**
+- WebUI 雙向模式（en_zh/ja_zh）辨識位置自動切換為本機，GPU 伺服器選項標記「不支援此模式」
+- WebUI GPU 伺服器模式下「轉錄麥克風」顯示醒目橘色提示方塊，說明原因與解法
+- WebUI 字幕模式切回對話模式時保留完整歷史訊息（不再清空）
+- WebUI 訊息上限 500 筆，超過時頂部顯示「僅顯示最近 500 筆，完整內容已寫入逐字稿記錄檔」
+- WebUI 各載入階段即時顯示進度：載入模型、連接 LLM、啟動 GPU 伺服器、等待就緒
+- WebUI 波形圖更新頻率從 1 秒改為 200ms，更即時反映音量
+- WebUI 狀態列格式統一：辨識「本機 large-v3-turbo」、翻譯「LLM qwen2.5:32b」
+- WebUI 子程序異常退出時顯示「啟動失敗」或「異常結束」（不再統一顯示「處理已完成」）
+- WebUI 子程序結束後終端機提示「按 Ctrl+C 可結束 WebUI 伺服器」
+- WebUI 切換裝置完成後清除底部「正在切換...」殘留文字
+- WebUI 裝置 popup 勾號改放右側，文字對齊
+- ASR prompt leak 過濾新增「請使用繁體中文」
+- `_webui_send` 自動清理 UTF-8 replacement character（`\ufffd`）
+- install.ps1 / install.sh 升級時版本相同但缺少 webui.py/webui.html 會自動補充安裝
+- install.ps1 whisper.cpp CUDA 編譯失敗時自動降級為 CPU 版
+- webui.py 重構：抽出 `_build_args()` 共用函式
+
 ### v2.14.2 (2026-03-19)
 
 **修正**

@@ -301,7 +301,7 @@ $banner_line = '=' * $cols
 
 Write-Host ""
 Write-Host "${C_TITLE}${banner_line}${NC}"
-Write-Host "${C_TITLE}${BOLD}  jt-live-whisper v2.14.2 - 100% 全地端 AI 語音工具集 - Windows 安裝程式${NC}"
+Write-Host "${C_TITLE}${BOLD}  jt-live-whisper v2.15.5 - 100% 全地端 AI 語音工具集 - Windows 安裝程式${NC}"
 Write-Host "${C_TITLE}  by Jason Cheng (Jason Tools)${NC}"
 Write-Host "${C_TITLE}${banner_line}${NC}"
 Write-Host ""
@@ -346,7 +346,21 @@ if ($Upgrade) {
     Write-Host "  ${C_WHITE}最新版本: v${remoteVer}${NC}"
 
     if ($localVer -eq $remoteVer) {
-        check_ok "已經是最新版本 (v${localVer})"
+        # 版本相同但檢查是否缺少檔案（舊版升級可能漏掉新檔案）
+        $missingFiles = @()
+        foreach ($f in @("webui.py","webui.html","subtitle_overlay.py")) {
+            if (-not (Test-Path (Join-Path $SCRIPT_DIR $f))) { $missingFiles += $f }
+        }
+        if ($missingFiles.Count -gt 0) {
+            info "版本相同但缺少檔案，補充安裝中..."
+            foreach ($f in @("translate_meeting.py","start.sh","start.ps1","install.sh","install.ps1","SOP.md","webui.py","webui.html","subtitle_overlay.py")) {
+                $src = Join-Path $repoDir $f
+                if (Test-Path $src) { Copy-Item $src (Join-Path $SCRIPT_DIR $f) -Force }
+            }
+            check_ok "已補充安裝缺少的檔案（$($missingFiles -join '、')）"
+        } else {
+            check_ok "已經是最新版本 (v${localVer})"
+        }
         Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
         exit 0
     }
@@ -374,7 +388,7 @@ if ($Upgrade) {
     $archiveDir = Join-Path $SCRIPT_DIR "versions\v${localVer}"
     if (-not (Test-Path $archiveDir)) {
         New-Item -Path $archiveDir -ItemType Directory -Force | Out-Null
-        foreach ($f in @("translate_meeting.py","start.sh","start.ps1","install.sh","install.ps1","SOP.md","config.json","webui.py","webui.html")) {
+        foreach ($f in @("translate_meeting.py","start.sh","start.ps1","install.sh","install.ps1","SOP.md","config.json","webui.py","webui.html","subtitle_overlay.py")) {
             $src = Join-Path $SCRIPT_DIR $f
             if (Test-Path $src) { Copy-Item $src $archiveDir }
         }
@@ -383,7 +397,7 @@ if ($Upgrade) {
 
     # 更新檔案
     $updated = 0
-    foreach ($f in @("translate_meeting.py","start.sh","start.ps1","install.sh","install.ps1","SOP.md","webui.py","webui.html")) {
+    foreach ($f in @("translate_meeting.py","start.sh","start.ps1","install.sh","install.ps1","SOP.md","webui.py","webui.html","subtitle_overlay.py")) {
         $src = Join-Path $repoDir $f
         if (Test-Path $src) {
             Copy-Item $src (Join-Path $SCRIPT_DIR $f) -Force
@@ -533,9 +547,27 @@ $GPU_MEMORY_MB  = 0
 $CUDA_VERSION   = ""
 $TORCH_CUDA_TAG = ""
 
-if (cmd_exists "nvidia-smi") {
+# nvidia-smi 可能不在 PATH 中（完全重裝後 PATH 可能被清掉）
+$nvidiaSmi = "nvidia-smi"
+if (-not (cmd_exists $nvidiaSmi)) {
+    $nvSmiFallbacks = @(
+        "$env:SystemRoot\System32\nvidia-smi.exe",
+        "$env:SystemRoot\SysNative\nvidia-smi.exe",
+        "${env:ProgramFiles}\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+    )
+    foreach ($p in $nvSmiFallbacks) {
+        if (Test-Path $p) { $nvidiaSmi = $p; break }
+    }
+}
+if ((cmd_exists $nvidiaSmi) -or (Test-Path $nvidiaSmi)) {
     try {
-        $smiCsv = & nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null
+        $smiCsv = & $nvidiaSmi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $smiCsv) {
+            # nvidia-smi 存在但執行失敗
+            check_warn "nvidia-smi 執行失敗（exit code: $LASTEXITCODE），可能驅動版本不符"
+            info "nvidia-smi 路徑: $nvidiaSmi"
+            info "請至 https://www.nvidia.com/drivers/ 更新 NVIDIA 驅動程式"
+        }
         if ($LASTEXITCODE -eq 0 -and $smiCsv) {
             # 多 GPU 時取第一張
             if ($smiCsv -is [array]) { $smiCsv = $smiCsv[0] }
@@ -545,7 +577,7 @@ if (cmd_exists "nvidia-smi") {
             $GPU_AVAILABLE = $true
 
             # CUDA 版本
-            $cudaLine = (& nvidia-smi 2>$null) -match "CUDA Version"
+            $cudaLine = (& $nvidiaSmi 2>$null) -match "CUDA Version"
             if ($cudaLine) {
                 if ($cudaLine -is [array]) { $cudaLine = $cudaLine[0] }
                 $CUDA_VERSION = ($cudaLine -replace '.*CUDA Version:\s*' -replace '\s.*').Trim()
@@ -571,8 +603,76 @@ if (cmd_exists "nvidia-smi") {
 }
 
 if (-not $GPU_AVAILABLE) {
-    check_notice "未偵測到 NVIDIA GPU，將安裝 CPU 版本"
-    info "翻譯建議使用區域網路 LLM 伺服器（--llm-host）或 NLLB / Argos 離線翻譯"
+    # nvidia-smi 偵測失敗，嘗試透過 WMI + 額外路徑搜尋
+    $nvGpuPci = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "NVIDIA" }
+    if ($nvGpuPci) {
+        # WMI 看得到 GPU，嘗試更多路徑找 nvidia-smi
+        $extraPaths = @()
+        # where.exe 可跨 32/64-bit 搜尋 System32
+        try {
+            $whereSmi = & where.exe nvidia-smi.exe 2>$null
+            if ($LASTEXITCODE -eq 0 -and $whereSmi) {
+                if ($whereSmi -is [array]) { $extraPaths += $whereSmi } else { $extraPaths += @($whereSmi) }
+            }
+        } catch { }
+        # NVIDIA 驅動安裝路徑（從 InstalledDisplayDrivers 推導）
+        try {
+            $drvPaths = $nvGpuPci.InstalledDisplayDrivers -split ','
+            foreach ($drv in $drvPaths) {
+                $drvDir = Split-Path $drv.Trim() -ErrorAction SilentlyContinue
+                if ($drvDir) { $extraPaths += "$drvDir\nvidia-smi.exe" }
+            }
+        } catch { }
+        # 登錄檔 NvSmi 路徑
+        try {
+            $regPath = (Get-ItemProperty "HKLM:\SOFTWARE\NVIDIA Corporation\Global\NvSmi" -ErrorAction SilentlyContinue).Path
+            if ($regPath) { $extraPaths += "$regPath\nvidia-smi.exe" }
+        } catch { }
+
+        foreach ($ep in ($extraPaths | Select-Object -Unique)) {
+            $ep = $ep.Trim()
+            if (-not $ep -or -not (Test-Path $ep)) { continue }
+            try {
+                $smiCsv = & $ep --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null
+                if ($LASTEXITCODE -eq 0 -and $smiCsv) {
+                    $nvidiaSmi = $ep
+                    if ($smiCsv -is [array]) { $smiCsv = $smiCsv[0] }
+                    $parts = $smiCsv.Split(',').Trim()
+                    $GPU_NAME      = $parts[0]
+                    $GPU_MEMORY_MB = [int]$parts[1]
+                    $GPU_AVAILABLE = $true
+                    $cudaLine = (& $nvidiaSmi 2>$null) -match "CUDA Version"
+                    if ($cudaLine) {
+                        if ($cudaLine -is [array]) { $cudaLine = $cudaLine[0] }
+                        $CUDA_VERSION = ($cudaLine -replace '.*CUDA Version:\s*' -replace '\s.*').Trim()
+                    }
+                    check_ok "NVIDIA GPU: ${GPU_NAME} ($([math]::Round($GPU_MEMORY_MB/1024,1)) GB)（透過額外路徑偵測）"
+                    check_ok "CUDA 驅動: ${CUDA_VERSION}"
+                    info "nvidia-smi 路徑: $nvidiaSmi"
+                    # CUDA 13+
+                    $CUDA_13_PLUS = $false
+                    if ($CUDA_VERSION -match "^1[3-9]\.") {
+                        $CUDA_13_PLUS = $true
+                        check_notice "CUDA ${CUDA_VERSION} 偵測到 — 將自動安裝 CUDA 12.x 相容程式庫"
+                    }
+                    if     ($CUDA_VERSION -match "^12\.[4-9]|^1[3-9]") { $TORCH_CUDA_TAG = "cu124" }
+                    elseif ($CUDA_VERSION -match "^12\.")               { $TORCH_CUDA_TAG = "cu121" }
+                    elseif ($CUDA_VERSION -match "^11\.[8-9]")          { $TORCH_CUDA_TAG = "cu118" }
+                    else                                                 { $TORCH_CUDA_TAG = "cu121" }
+                    break
+                }
+            } catch { }
+        }
+    }
+
+    if (-not $GPU_AVAILABLE) {
+        check_notice "未偵測到 NVIDIA GPU，將安裝 CPU 版本"
+        info "翻譯建議使用區域網路 LLM 伺服器（--llm-host）或 NLLB / Argos 離線翻譯"
+        if ($nvGpuPci) {
+            check_warn "系統有 NVIDIA 裝置（$($nvGpuPci.Name)）但 nvidia-smi 無法執行"
+            info "可能原因：NVIDIA 驅動未安裝或版本過舊，請至 https://www.nvidia.com/drivers/ 更新驅動"
+        }
+    }
 }
 
 # ─── Python ───────────────────────────────────────────────────
@@ -761,6 +861,7 @@ $corePackages = @(
     @("uvicorn",                         "uvicorn（WebUI ASGI 伺服器）"),
     @("websockets",                      "websockets（WebUI 即時通訊）"),
     @("python-multipart",               "python-multipart（WebUI 檔案上傳）"),
+    @("PyQt6",                           "PyQt6（懸浮字幕視窗）"),
     @("argostranslate",                  "Argos Translate（離線翻譯備援）")
 )
 
@@ -833,6 +934,7 @@ if ($argosCheck -eq "OK") {
 } else {
     info "下載英翻中 / 中翻英模型..."
     & $VENV_PYTHON -c @"
+import os, ssl
 try:
     import argostranslate.package as pkg
     pkg.update_package_index()
@@ -840,7 +942,24 @@ try:
     for p in avail:
         if (p.from_code == 'en' and p.to_code == 'zh') or \
            (p.from_code == 'zh' and p.to_code == 'en'):
-            pkg.install_from_path(p.download())
+            try:
+                pkg.install_from_path(p.download())
+            except Exception as e:
+                if 'SSL' in str(e) or 'CERTIFICATE' in str(e).upper():
+                    # SSL 失敗：停用驗證重試
+                    ssl._create_default_https_context = ssl._create_unverified_context
+                    os.environ['CURL_CA_BUNDLE'] = ''
+                    os.environ['REQUESTS_CA_BUNDLE'] = ''
+                    try:
+                        import urllib3
+                        urllib3.disable_warnings()
+                    except: pass
+                    pkg.update_package_index()
+                    avail2 = pkg.get_available_packages()
+                    for p2 in avail2:
+                        if p2.from_code == p.from_code and p2.to_code == p.to_code:
+                            pkg.install_from_path(p2.download())
+                            break
 except Exception:
     pass
 "@ 2>&1 | Out-Null
@@ -994,9 +1113,11 @@ if ($true) {
     if ($GPU_AVAILABLE) {
         $hasCudaTK = Test-Path "${env:CUDA_PATH}\bin\nvcc.exe"
         if (-not $hasCudaTK) {
-            # 嘗試常見路徑
+            # 嘗試常見路徑（必須確認 nvcc.exe 存在，不只是目錄）
             $cudaPaths = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue
-            if ($cudaPaths) { $hasCudaTK = $true }
+            foreach ($cp in $cudaPaths) {
+                if (Test-Path (Join-Path $cp.FullName "bin\nvcc.exe")) { $hasCudaTK = $true; break }
+            }
         }
         if ($hasCudaTK) {
             check_ok "CUDA Toolkit"
@@ -1116,6 +1237,9 @@ if ($true) {
             if ($GPU_AVAILABLE -and $hasCudaTK) {
                 $cmakeArgs += "-DGGML_CUDA=ON"
                 $buildDesc = "CUDA GPU 加速版"
+            } else {
+                # 明確停用 CUDA，避免 cmake 自動偵測到 nvcc 而嘗試啟用
+                $cmakeArgs += "-DGGML_CUDA=OFF"
             }
 
             # 若有舊的 build 目錄，先清除（避免快取干擾）
@@ -1125,6 +1249,23 @@ if ($true) {
 
             info "CMake 設定（${buildDesc}）..."
             $cmakeOutput = & cmake @cmakeArgs 2>&1
+
+            # CUDA 編譯失敗（含 cmake 自動偵測 CUDA 導致的失敗）→ 自動降級 CPU
+            $cmakeOutStr = ($cmakeOutput | ForEach-Object { "$_" }) -join "`n"
+            $isCudaFail = ($LASTEXITCODE -ne 0) -and ($buildDesc -eq "CUDA GPU 加速版" -or $cmakeOutStr -match "CUDA|cuda")
+            if ($isCudaFail) {
+                check_warn "CUDA 編譯設定失敗，自動改用 CPU 版編譯"
+                info "（whisper.cpp 即時辨識改用 CPU，不影響 faster-whisper 的 CUDA 加速）"
+                info "若需 GPU 加速 whisper.cpp，請在 Developer PowerShell for VS 中重新執行"
+                $cmakeArgs = ($cmakeArgs | Where-Object { $_ -ne "-DGGML_CUDA=ON" }) + @("-DGGML_CUDA=OFF")
+                $cmakeArgs = $cmakeArgs | Select-Object -Unique
+                $buildDesc = "CPU 版（CUDA 降級）"
+                if (Test-Path $buildDir) {
+                    Remove-Item $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                info "CMake 設定（${buildDesc}）..."
+                $cmakeOutput = & cmake @cmakeArgs 2>&1
+            }
 
             if ($LASTEXITCODE -ne 0) {
                 check_fail "CMake 設定失敗"
@@ -1174,12 +1315,14 @@ if ($true) {
                     File = "ggml-large-v3-turbo.bin"
                     Size = "1.5 GB"
                     Url  = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+                    Auto = $true  # 預設自動下載（多語言必備）
                 },
                 @{
                     Name = "large-v3"
                     File = "ggml-large-v3.bin"
                     Size = "3.1 GB"
                     Url  = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+                    Auto = $false
                 }
             )
 
@@ -1188,8 +1331,15 @@ if ($true) {
                 if (Test-Path $mPath) {
                     check_ok "Whisper 模型 $($m.Name) 已存在"
                 } else {
-                    $dlModel = Read-Host "  下載 Whisper 模型 $($m.Name) ($($m.Size))？(Y/n)"
-                    if ($dlModel -ne 'n' -and $dlModel -ne 'N') {
+                    $doDownload = $false
+                    if ($m.Auto) {
+                        info "自動下載 Whisper 模型 $($m.Name)（$($m.Size)，多語言辨識必備）..."
+                        $doDownload = $true
+                    } else {
+                        $dlModel = Read-Host "  下載 Whisper 模型 $($m.Name) ($($m.Size))？(Y/n)"
+                        $doDownload = ($dlModel -ne 'n' -and $dlModel -ne 'N')
+                    }
+                    if ($doDownload) {
                         info "下載中（$($m.Size)）..."
                         try {
                             # 優先用 curl.exe（Windows 10+ 內建，有進度條）
@@ -1223,64 +1373,71 @@ if ($true) {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# 5b. faster-whisper 模型預下載
+# 5b. faster-whisper 模型預下載（全部下載）
 # ═══════════════════════════════════════════════════════════════
 
-section "faster-whisper 模型預下載（large-v3-turbo）"
+section "faster-whisper 模型預下載"
 
-$fwModelFound = & $VENV_PYTHON -c @"
+& $VENV_PYTHON -m pip install --disable-pip-version-check -q huggingface_hub 2>$null | Out-Null
+
+$fwModelsToDownload = @(
+    @{ Name = "base.en";         Size = "約 150MB" },
+    @{ Name = "base";            Size = "約 150MB" },
+    @{ Name = "small.en";        Size = "約 500MB" },
+    @{ Name = "small";           Size = "約 500MB" },
+    @{ Name = "large-v3-turbo";  Size = "約 1.6GB" }
+)
+
+foreach ($fwM in $fwModelsToDownload) {
+    $fwName = $fwM.Name
+    # 檢查是否已存在
+    $fwFound = & $VENV_PYTHON -c "
 import os
-found = False
-dirs = []
-try:
-    from huggingface_hub.constants import HF_HUB_CACHE
-    dirs.append(HF_HUB_CACHE)
-except: pass
-default = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
-if default not in dirs:
-    dirs.append(default)
-for d in dirs:
-    for prefix in ['Systran', 'mobiuslabsgmbh']:
-        if os.path.isdir(os.path.join(d, 'models--' + prefix + '--faster-whisper-large-v3-turbo')):
-            found = True
-            break
-    if found:
-        break
-print('found' if found else 'notfound')
-"@ 2>$null
-
-if ($fwModelFound -eq "found") {
-    check_ok "faster-whisper 模型 large-v3-turbo 已存在"
-} else {
-    info "下載 faster-whisper large-v3-turbo 模型（約 1.6GB）..."
-    & $VENV_PYTHON -m pip install --disable-pip-version-check -q huggingface_hub 2>$null | Out-Null
-    # mobiuslabsgmbh 是 faster-whisper 內部預設的 repo（Systran 已需認證）
-    $null = hf_download "mobiuslabsgmbh/faster-whisper-large-v3-turbo" "faster-whisper 模型" ""
-
-    # 驗證下載
-    $fwVerify = & $VENV_PYTHON -c @"
+for d in [os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')]:
+    for prefix in ['Systran', 'mobiuslabsgmbh', 'deepdml']:
+        if os.path.isdir(os.path.join(d, 'models--' + prefix + '--faster-whisper-$fwName')): print('found'); exit()
+print('notfound')
+" 2>$null
+    if ($fwFound -eq "found") {
+        check_ok "faster-whisper $fwName 已存在"
+        continue
+    }
+    info "下載 faster-whisper $fwName（$($fwM.Size)）..."
+    # 嘗試多個 repo
+    $fwRepos = @("mobiuslabsgmbh/faster-whisper-$fwName", "Systran/faster-whisper-$fwName", "deepdml/faster-whisper-$fwName")
+    $fwDlOk = $false
+    $fwAttempt = 0
+    foreach ($fwRepo in $fwRepos) {
+        $fwAttempt++
+        & $VENV_PYTHON -c @"
 import os
-found = False
-dirs = []
+os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+from huggingface_hub import snapshot_download
 try:
-    from huggingface_hub.constants import HF_HUB_CACHE
-    dirs.append(HF_HUB_CACHE)
-except: pass
-default = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
-if default not in dirs:
-    dirs.append(default)
-for d in dirs:
-    for prefix in ['Systran', 'mobiuslabsgmbh']:
-        if os.path.isdir(os.path.join(d, 'models--' + prefix + '--faster-whisper-large-v3-turbo')):
-            found = True
-            break
-    if found:
-        break
-print('found' if found else 'notfound')
-"@ 2>$null
-
-    if ($fwVerify -eq "found") {
-        check_ok "faster-whisper 模型 large-v3-turbo 安裝完成"
+    snapshot_download('$fwRepo')
+except:
+    try:
+        import ssl; ssl._create_default_https_context = ssl._create_unverified_context
+        os.environ['CURL_CA_BUNDLE'] = ''
+        os.environ['REQUESTS_CA_BUNDLE'] = ''
+        snapshot_download('$fwRepo')
+    except:
+        pass
+"@ 2>$null | Out-Null
+        $fwDlCheck = & $VENV_PYTHON -c "
+import os
+for d in [os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')]:
+    for prefix in ['Systran', 'mobiuslabsgmbh', 'deepdml']:
+        if os.path.isdir(os.path.join(d, 'models--' + prefix + '--faster-whisper-$fwName')): print('found'); exit()
+print('notfound')
+" 2>$null
+        if ($fwDlCheck -eq "found") { $fwDlOk = $true; break }
+        info "  ($fwAttempt/$($fwRepos.Count)) 嘗試更換其他來源..."
+    }
+    if ($fwDlOk) {
+        check_ok "faster-whisper $fwName 安裝完成"
+    } else {
+        check_notice "faster-whisper $fwName 下載失敗，可稍後重新執行安裝"
     }
 }
 
@@ -2205,6 +2362,13 @@ if ($WHISPER_STREAM_EXE -and (Test-Path $WHISPER_STREAM_EXE)) {
     check_ok "whisper.cpp（本機即時辨識）"
 } else {
     info "whisper.cpp 未安裝（離線模式、Moonshine、GPU 伺服器 不受影響）"
+}
+
+# PyQt6
+if (venv_import_ok "PyQt6") {
+    check_ok "PyQt6（懸浮字幕視窗）"
+} else {
+    check_missing "PyQt6 未安裝（pip install PyQt6）"
 }
 
 # ffmpeg

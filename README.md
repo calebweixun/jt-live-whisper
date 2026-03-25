@@ -1,4 +1,4 @@
-# jt-live-whisper v2.14.2
+# jt-live-whisper v2.15.5
 
 **100% 全地端 AI 語音工具集**：即時轉錄、即時翻譯、錄音檔批次處理、講者辨識、會議摘要，所有 AI 模型皆在自有設備上執行，資料不經過任何雲端服務。
 
@@ -152,6 +152,27 @@ Author: Jason Cheng (Jason Tools)
 - **自動偵測 LLM 伺服器**：支援 Ollama、LM Studio、Jan.ai、vLLM、LocalAI、llama.cpp、LiteLLM 等本地端 LLM 伺服器
 - **互動式選單 + CLI 模式**：新手友善的選單介面，進階用戶可用命令列參數直接啟動
 - **WebUI 瀏覽器介面**：`./start.sh --webui` 在瀏覽器中操作所有功能，支援即時字幕、離線處理、講者辨識、摘要，手機/平板也可使用
+- **關鍵字即時通知**：設定關鍵字，即時辨識出現時自動發出通知。可用於追蹤會議重點、開會時提醒留意關鍵議題，或線上課程摸魚時讓系統在「請實作」「這個會考」時自動提醒。支援全螢幕警示特效、瀏覽器推播、音效提示（警示/柔和可選）、懸浮字幕閃爍，同一關鍵字冷卻機制避免重複通知
+- **字幕轉發**：即時字幕自動轉發到通訊平台（Telegram / Slack / Discord / Teams / LINE / Nextcloud Talk / 通用 API），可同時啟用多個平台、自訂發送間隔與內容（含時間/原文/譯文）。通用 API 支援 Body 範本（`{{text}}` 變數）搭配自訂 Headers
+- **懸浮字幕**（感謝 OSSLab 熊大提供建議）：桌面半透明字幕覆蓋視窗（PyQt6），可疊加於任何應用程式上方。字體依視窗大小自動縮放、可拖曳移動與調整大小、滑鼠穿透模式、字幕切換淡入淡出動畫。單語/雙語自動切換高度
+
+**關鍵字即時通知** — 設定關鍵字後，辨識結果出現時全螢幕警示 + 音效提醒：
+
+![關鍵字通知效果](images/keyword-alert.png)
+
+![關鍵字通知設定](images/keyword-alert-settings.png)
+
+**懸浮字幕** — 半透明覆蓋視窗，疊加於任何應用程式上方：
+
+![懸浮字幕效果](images/subtitle-overlay.png)
+
+![懸浮字幕設定](images/subtitle-overlay-settings.png)
+
+**字幕轉發** — 即時字幕自動轉發到 Telegram 等通訊平台：
+
+![字幕轉發設定](images/forward-telegram-settings.png)
+
+![Telegram 轉發效果](images/forward-telegram-result.png)
 
 &nbsp;
 
@@ -424,6 +445,19 @@ cd C:\jt-live-whisper
 ./start.sh --input meeting.mp3 --diarize --num-speakers 3 --summarize
 ```
 
+**產出檔案**（存於 `logs/<session>/`）：
+
+| 檔案 | 說明 | 需要 LLM |
+|------|------|----------|
+| `時間逐字稿_*.txt` | 帶時間戳逐字稿（翻譯模式含原文+譯文） | 校正需要 |
+| `時間逐字稿_*.html` | 互動式逐字稿（點擊時間戳可播放音訊） | 校正需要 |
+| `時間逐字稿_*.srt` | SRT 字幕檔 | 否 |
+| `時間逐字稿_*.vtt` | WebVTT 字幕檔 | 否 |
+| `摘要_*.txt` | AI 重點摘要 + 校正逐字稿 | 是 |
+| `摘要_*.html` | AI 摘要 HTML（含樣式與相關檔案連結） | 是 |
+
+> 有設定 LLM 伺服器時，逐字稿會自動經過 LLM 校正（修正 ASR 辨識錯字），純轉錄模式同樣支援。
+
 ### 批次摘要
 
 ```bash
@@ -544,15 +578,21 @@ cd C:\jt-live-whisper
 
 ```
 jt-live-whisper/
-  translate_meeting.py     主程式（跨平台）
+  translate_meeting.py     主程式（即時辨識、離線處理、翻譯、摘要，跨平台）
+  webui.py                 WebUI 伺服器（FastAPI + WebSocket，瀏覽器介面後端）
+  webui.html               WebUI 前端（單一 HTML，內嵌 CSS/JS）
+  subtitle_overlay.py      懸浮字幕覆蓋視窗（PyQt6，啟用時由主程式自動啟動）
   start.sh                 啟動腳本（macOS）
   start.ps1                啟動腳本（Windows）
   install.sh               安裝腳本（macOS）
   install.ps1              安裝腳本（Windows）
-  config.json              使用者設定（自動產生）
-  logs/                    轉錄記錄檔、AI 摘要檔（自動建立）
+  remote_whisper_server.py GPU 伺服器端 Whisper 辨識服務（選配）
+  config.json              使用者設定（自動產生，含 LLM/GPU/WebUI 密碼等）
+  SOP.md                   完整使用手冊
+  CHANGELOG.md             版本更新記錄
+  logs/                    轉錄記錄檔、AI 摘要檔、HTML 逐字稿（自動建立）
   recordings/              暫存音訊轉檔（自動建立）
-  whisper.cpp/             Whisper AI 引擎（macOS 自動編譯，Windows 下載預編譯版本）
+  whisper.cpp/             whisper.cpp 即時辨識引擎（macOS 自動編譯，Windows 下載預編譯版本）
   venv/                    Python 虛擬環境（安裝時自動建立）
 ```
 
@@ -579,6 +619,14 @@ jt-live-whisper/
       → 本地端 faster-whisper AI 語音辨識
         → （選配）講者辨識
           → 本地端 LLM / NLLB / Argos 翻譯 + AI 摘要
+
+WebUI 瀏覽器介面（./start.sh --webui）：
+  webui.py（FastAPI + WebSocket）
+    → 瀏覽器設定頁（所有功能皆可操作）
+    → 啟動 translate_meeting.py 子程序
+    → TCP localhost:19780 接收即時事件
+    → WebSocket 推送到瀏覽器（即時字幕、進度、狀態）
+    → 支援遠端觀看（密碼保護）、手機/平板
 ```
 
 &nbsp;

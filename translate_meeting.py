@@ -293,9 +293,19 @@ _START_CMD = ".\\start.ps1" if IS_WINDOWS else "./start.sh"
 _INSTALL_CMD = ".\\install.ps1" if IS_WINDOWS else "./install.sh"
 
 
+_overlay_proc_ref = None  # 全域參照，供 _force_exit 使用
+
 def _force_exit(code=0):
     """強制結束程序。一律用 os._exit() 避免卡在 C 擴展（CTranslate2/MLX Metal）。
     signal handler 在呼叫前已完成音訊裝置清理。"""
+    # 結束懸浮字幕子程序（os._exit 不會觸發 atexit）
+    global _overlay_proc_ref
+    if _overlay_proc_ref is not None:
+        try:
+            _overlay_proc_ref.terminate()
+        except Exception:
+            pass
+        _overlay_proc_ref = None
     if not IS_WINDOWS:
         # macOS：殺掉 resource_tracker 子程序，避免 semaphore 洩漏警告
         try:
@@ -613,11 +623,10 @@ _MIC_LANG = {"en2zh": "zh", "zh2en": "en", "ja2zh": "zh", "zh2ja": "ja",
 # 可用的 whisper 模型（由小到大）
 WHISPER_MODELS = [
     ("base.en", "ggml-base.en.bin", "最快，準確度一般"),
+    ("base", "ggml-base.bin", "最快，中日文可用"),
     ("small.en", "ggml-small.en.bin", "快，準確度好"),
-    ("small", "ggml-small.bin", "快，多語言（中日文可用）"),
+    ("small", "ggml-small.bin", "快，中日文可用"),
     ("large-v3-turbo", "ggml-large-v3-turbo.bin", "快，準確度很好"),
-    ("medium.en", "ggml-medium.en.bin", "較慢，準確度很好"),
-    ("medium", "ggml-medium.bin", "較慢，多語言（中日文品質較好）"),
     ("large-v3", "ggml-large-v3.bin", "最慢，中日文品質最好，有獨立 GPU 可選用"),
 ]
 
@@ -713,7 +722,7 @@ ASR_ENGINES = [
     ("moonshine", "Moonshine", "真串流，低延遲，僅英文"),
 ]
 
-APP_VERSION = "2.14.2"
+APP_VERSION = "2.15.5"
 
 # ─── WebUI 暫停控制（SIGUSR1 toggle）──────────────────────────────
 _webui_pause_event = None  # 由各 streaming 函式設定
@@ -738,13 +747,27 @@ _webui_queue = None  # queue.Queue，啟用時才建立
 _WEBUI_PORT = 19780
 
 
+_subtitle_forwarder = None  # SubtitleForwarder 實例（啟用時才建立）
+_keyword_monitor = None     # KeywordMonitor 實例（啟用時才建立）
+
+
 def _webui_send(event: dict):
     """非阻塞推送事件到 WebUI（未啟用時直接返回）"""
     if _webui_queue is not None:
         try:
+            # 清理 UTF-8 replacement character
+            for k in ("src_text", "dst_text", "detail"):
+                if k in event and isinstance(event[k], str):
+                    event[k] = event[k].replace("\ufffd", "")
             _webui_queue.put_nowait(event)
         except Exception:
             pass
+    # 字幕轉發：餵入即時辨識結果
+    if event.get("type") == "transcription" and _subtitle_forwarder is not None:
+        _subtitle_forwarder.feed(event)
+    # 關鍵字通知：檢查是否匹配
+    if event.get("type") == "transcription" and _keyword_monitor is not None:
+        _keyword_monitor.check(event)
 
 
 def _start_webui_sender():
@@ -802,6 +825,257 @@ def _start_webui_sender():
     _t.start()
 
 
+# ─── SSL 容錯（企業網路 SSL 中間人憑證）───
+import ssl as _ssl
+_ssl_ctx_noverify = _ssl.create_default_context()
+_ssl_ctx_noverify.check_hostname = False
+_ssl_ctx_noverify.verify_mode = _ssl.CERT_NONE
+
+def _urlopen_safe(req, timeout=10):
+    """urlopen with SSL fallback（SSL 驗證失敗時自動停用驗證重試）"""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e:
+        if "SSL" in str(e) or "CERTIFICATE" in str(e).upper():
+            return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx_noverify)
+        raise
+
+# ─── 字幕轉發（Telegram / Slack / Discord / Teams / 自訂 API）───
+
+class SubtitleForwarder:
+    """即時字幕聚合轉發器：每 N 秒將累積字幕發送到通訊平台"""
+
+    def __init__(self, config: dict):
+        self._interval = max(5, config.get("interval", 10))
+        self._platforms = config.get("platforms", {})
+        self._inc_ts = config.get("include_timestamp", False)
+        self._inc_src = config.get("include_source", True)
+        self._inc_dst = config.get("include_translation", True)
+        self._buffer = []
+        self._lock = threading.Lock()
+        self._timer = None
+        self._active = True
+        self._schedule()
+
+    def feed(self, event: dict):
+        with self._lock:
+            self._buffer.append((
+                event.get("timestamp", ""),
+                event.get("src_lang", ""),
+                event.get("src_text", ""),
+                event.get("dst_lang", ""),
+                event.get("dst_text", ""),
+            ))
+
+    def _schedule(self):
+        if not self._active:
+            return
+        self._timer = threading.Timer(self._interval, self._flush)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _flush(self):
+        with self._lock:
+            lines = self._buffer[:]
+            self._buffer.clear()
+        if lines:
+            text = self._format(lines)
+            for name, cfg in self._platforms.items():
+                if cfg.get("enabled") and text:
+                    threading.Thread(target=self._send, args=(name, cfg, text),
+                                     daemon=True).start()
+        if self._active:
+            self._schedule()
+
+    def _format(self, lines):
+        parts = []
+        for ts, sl, st, dl, dt in lines:
+            ts_prefix = f"[{ts.strip('[]')}] " if self._inc_ts and ts else ""
+            seg = []
+            if self._inc_src and st:
+                seg.append(f"{ts_prefix}{st}")
+            if self._inc_dst and dt:
+                seg.append(f"{ts_prefix}{dt}")
+            # 至少輸出一行（都沒勾時輸出原文）
+            if not seg and st:
+                seg.append(f"{ts_prefix}{st}")
+            if seg:
+                parts.append("\n".join(seg))
+        return "\n\n".join(parts)
+
+    def _send(self, platform, cfg, text):
+        try:
+            if platform == "telegram":
+                self._send_telegram(cfg, text)
+            elif platform == "slack":
+                self._send_webhook(cfg["webhook_url"], {"text": text})
+            elif platform == "discord":
+                # Discord 2000 字元限制
+                for chunk in self._chunk_text(text, 1990):
+                    self._send_webhook(cfg["webhook_url"], {"content": chunk})
+            elif platform == "teams":
+                self._send_webhook(cfg["webhook_url"], {"text": text})
+            elif platform == "line":
+                self._send_line(cfg, text)
+            elif platform == "nctalk":
+                self._send_nctalk(cfg, text)
+            elif platform == "custom":
+                self._send_custom(cfg, text)
+        except Exception as e:
+            print(f"  [字幕轉發] {platform} 發送失敗: {e}", file=sys.stderr, flush=True)
+
+    def _send_telegram(self, cfg, text):
+        url = f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage"
+        data = json.dumps({"chat_id": cfg["chat_id"], "text": text}).encode("utf-8")
+        req = urllib.request.Request(url, data=data,
+                                     headers={"Content-Type": "application/json"})
+        _urlopen_safe(req)
+
+    def _send_webhook(self, url, payload):
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data,
+                                     headers={"Content-Type": "application/json"})
+        _urlopen_safe(req)
+
+    def _send_line(self, cfg, text):
+        """LINE Messaging API push message"""
+        url = "https://api.line.me/v2/bot/message/push"
+        payload = {
+            "to": cfg["target_id"],
+            "messages": [{"type": "text", "text": text}]
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {cfg['channel_access_token']}"
+        })
+        _urlopen_safe(req)
+
+    def _send_nctalk(self, cfg, text):
+        """Nextcloud Talk OCS API 發送訊息"""
+        base = cfg["url"].rstrip("/")
+        room = cfg["room_token"]
+        url = f"{base}/ocs/v2.php/apps/spreed/api/v1/chat/{room}"
+        data = json.dumps({"message": text}).encode("utf-8")
+        # Basic auth
+        import base64 as _b64
+        cred = _b64.b64encode(f"{cfg['user']}:{cfg['password']}".encode()).decode()
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {cred}",
+            "OCS-APIRequest": "true"
+        })
+        _urlopen_safe(req)
+
+    def _send_custom(self, cfg, text):
+        body_tpl = cfg.get("body_template", "")
+        if body_tpl and "{{text}}" in body_tpl:
+            # JSON 模板：替換 {{text}} 並自動設 Content-Type
+            # 需要 JSON-escape 文字內容（處理換行、引號等）
+            escaped = json.dumps(text)[1:-1]  # 去掉外層引號，保留轉義
+            body = body_tpl.replace("{{text}}", escaped).encode("utf-8")
+            headers = {"Content-Type": "application/json; charset=utf-8"}
+        else:
+            body = text.encode("utf-8")
+            headers = {"Content-Type": "text/plain; charset=utf-8"}
+        headers.update(cfg.get("headers", {}))
+        req = urllib.request.Request(cfg["url"], data=body,
+                                     headers=headers, method="POST")
+        _urlopen_safe(req)
+
+    @staticmethod
+    def _chunk_text(text, max_len):
+        while len(text) > max_len:
+            # 在換行處切割
+            idx = text.rfind("\n", 0, max_len)
+            if idx <= 0:
+                idx = max_len
+            yield text[:idx]
+            text = text[idx:].lstrip("\n")
+        if text:
+            yield text
+
+    def reload(self, config: dict):
+        self._interval = max(5, config.get("interval", 10))
+        self._platforms = config.get("platforms", {})
+        self._inc_ts = config.get("include_timestamp", False)
+        self._inc_src = config.get("include_source", True)
+        self._inc_dst = config.get("include_translation", True)
+
+    def stop(self):
+        self._active = False
+        if self._timer:
+            self._timer.cancel()
+
+
+def _init_subtitle_forwarder():
+    """從 config.json 初始化字幕轉發器"""
+    global _subtitle_forwarder
+    try:
+        fwd_cfg = _config.get("subtitle_forward", {})
+        if fwd_cfg.get("enabled"):
+            has_active = any(p.get("enabled") for p in fwd_cfg.get("platforms", {}).values())
+            if has_active:
+                _subtitle_forwarder = SubtitleForwarder(fwd_cfg)
+                _plat_names = [n for n, p in fwd_cfg.get("platforms", {}).items() if p.get("enabled")]
+                print(f"  [字幕轉發] 已啟用：{', '.join(_plat_names)}，間隔 {fwd_cfg.get('interval', 10)} 秒")
+    except Exception as e:
+        print(f"  [字幕轉發] 初始化失敗: {e}", file=sys.stderr)
+
+
+# ─── 關鍵字即時通知 ──────────────────────────────────────
+
+class KeywordMonitor:
+    """即時辨識結果關鍵字比對，匹配時推送通知事件到 WebUI / 懸浮字幕"""
+
+    def __init__(self, config: dict):
+        self._keywords = [k.strip().lower() for k in config.get("keywords", []) if k.strip()]
+        self._cooldown = max(5, config.get("cooldown", 30))
+        self._browser_notify = config.get("browser_notify", True)
+        self._sound = config.get("sound", True)
+        self._overlay_flash = config.get("overlay_flash", True)
+        self._last_fired = {}  # keyword → timestamp
+
+    def check(self, event: dict):
+        if not self._keywords:
+            return
+        src = (event.get("src_text") or "").lower()
+        dst = (event.get("dst_text") or "").lower()
+        text = src + " " + dst
+        now = time.monotonic()
+
+        for kw in self._keywords:
+            if kw in text:
+                # 冷卻檢查
+                if kw in self._last_fired and now - self._last_fired[kw] < self._cooldown:
+                    continue
+                self._last_fired[kw] = now
+                # 取上下文（原文優先，沒有則用譯文）
+                context = event.get("src_text") or event.get("dst_text") or ""
+                ts = event.get("timestamp", "")
+                _webui_send({
+                    "type": "keyword_alert",
+                    "keyword": kw,
+                    "context": context,
+                    "timestamp": ts,
+                    "browser_notify": self._browser_notify,
+                    "sound": self._sound,
+                    "overlay_flash": self._overlay_flash,
+                })
+
+
+def _init_keyword_monitor():
+    """從 config.json 初始化關鍵字通知"""
+    global _keyword_monitor
+    try:
+        kw_cfg = _config.get("keyword_alert", {})
+        if kw_cfg.get("enabled") and kw_cfg.get("keywords"):
+            _keyword_monitor = KeywordMonitor(kw_cfg)
+            print(f"  [關鍵字通知] 已啟用：{len(kw_cfg['keywords'])} 個關鍵字，冷卻 {kw_cfg.get('cooldown', 30)} 秒")
+    except Exception as e:
+        print(f"  [關鍵字通知] 初始化失敗: {e}", file=sys.stderr)
+
+
 # 常見 LLM 伺服器預設 port（供參考）
 LLM_PRESETS = [
     ("Ollama",              "localhost:11434"),
@@ -838,7 +1112,7 @@ SUMMARY_PROMPT_TEMPLATE = """\
 你是專業的會議記錄整理員。請根據以下即時轉錄的逐字稿，完成兩件事：
 
 1. **重點摘要**：列出 5-10 個重點，每個重點用一句話概述。
-2. **校正逐字稿**：將零碎的語音辨識結果整理成流暢、易讀的段落文字。合併斷句、修正錯字，保留原始語意，不要增刪內容。不需要保留時間戳記。**必須完整輸出所有內容，嚴禁以「以下略」「篇幅限制」「內容省略」等理由截斷或跳過任何段落。**
+2. **校正逐字稿**：將零碎的語音辨識結果整理成流暢、易讀的段落文字。合併斷句、修正錯字，保留原始語意，不要增刪內容。不需要保留時間戳記。**必須完整輸出所有內容，嚴禁以「以下略」「篇幅限制」「內容省略」等理由截斷或跳過任何段落。** 話題轉換時必須換段（空一行），每段約 3-8 句，嚴禁整篇輸出成一個段落。
 
 輸出格式：
 
@@ -850,7 +1124,7 @@ SUMMARY_PROMPT_TEMPLATE = """\
 
 ## 校正逐字稿
 
-（整理成流暢段落的純文字逐字稿，不要使用 markdown 格式，不要逐行列出，要合併成自然的段落）
+（整理成流暢段落的純文字逐字稿，不要使用 markdown 格式，不要逐行列出，要合併成自然的段落。話題轉換時換段，每段空一行分隔）
 
 規則：
 - 逐字稿中 [EN] 標記的是英文原文語音辨識結果，[中] 標記的是中文翻譯。校正時請以中文翻譯為主，參考英文原文修正翻譯錯誤
@@ -871,7 +1145,7 @@ SUMMARY_PROMPT_DIARIZE_TEMPLATE = """\
 你是專業的會議記錄整理員。請根據以下含有講者標記的逐字稿，完成兩件事：
 
 1. **重點摘要**：列出 5-10 個重點，每個重點用一句話概述。
-2. **校正逐字稿**：將零碎的語音辨識結果整理成流暢、易讀的對話文字。合併同一位講者的連續斷句、修正錯字，保留原始語意，不要增刪內容。不需要保留時間戳記。**必須完整輸出所有內容，嚴禁以「以下略」「篇幅限制」「內容省略」等理由截斷或跳過任何段落。**
+2. **校正逐字稿**：將零碎的語音辨識結果整理成流暢、易讀的對話文字。合併同一位講者的連續斷句、修正錯字，保留原始語意，不要增刪內容。不需要保留時間戳記。**必須完整輸出所有內容，嚴禁以「以下略」「篇幅限制」「內容省略」等理由截斷或跳過任何段落。** 每位講者的每段發言約 3-8 句，過長時分成多段（每段都要標注 Speaker N）。
 
 輸出格式：
 
@@ -937,7 +1211,7 @@ SUMMARY_MERGE_PROMPT_TEMPLATE = """\
 
 def _summary_prompt(transcript, topic=None, summary_mode="both"):
     """依據逐字稿內容選擇摘要 prompt（有 Speaker 標籤用對話版）
-    summary_mode: "both"（摘要+逐字稿）、"summary"（只摘要）、"transcript"（只逐字稿）
+    summary_mode: "both"（摘要+逐字稿）、"summary"（只摘要）、"correct_only"（只校正）、"transcript"（純 ASR）
     """
     if "[Speaker " in transcript:
         prompt = SUMMARY_PROMPT_DIARIZE_TEMPLATE.format(transcript=transcript)
@@ -1563,6 +1837,7 @@ class OllamaTranslator:
         if not skip_check:
             srv_label = "Ollama" if server_type == "ollama" else "LLM"
             print(f"{C_DIM}正在連接 {srv_label} ({model})...{RESET}", end=" ", flush=True)
+            _webui_send({"type": "progress", "stage": "載入中", "detail": f"連接 {srv_label}（{model}）"})
             try:
                 self._call_ollama("hello", [])
                 print(f"{C_OK}{BOLD}完成！{RESET}")
@@ -1819,6 +2094,7 @@ class ArgosTranslator:
             print(f"請執行 {_INSTALL_CMD} 重新安裝，或改用 LLM 伺服器翻譯", file=sys.stderr)
             sys.exit(1)
         print(f"{C_DIM}正在載入離線翻譯模型...{RESET}", end=" ", flush=True)
+        _webui_send({"type": "progress", "stage": "載入中", "detail": "離線翻譯模型"})
         self.sp = sentencepiece.SentencePieceProcessor()
         self.sp.Load(os.path.join(ARGOS_PKG_PATH, "sentencepiece.model"))
         self.ct2 = ctranslate2.Translator(
@@ -1910,12 +2186,32 @@ class NllbTranslator:
         self.tgt_lang = self._LANG_MAP[tgt_key]
         self.direction = direction
         print(f"{C_DIM}正在載入 NLLB 離線翻譯模型...{RESET}", end=" ", flush=True)
-        self.sp = sentencepiece.SentencePieceProcessor()
-        self.sp.Load(os.path.join(NLLB_MODEL_DIR, "sentencepiece.bpe.model"))
-        self.ct2 = ctranslate2.Translator(
-            NLLB_MODEL_DIR, device="cpu", compute_type="int8"
-        )
-        print(f"{C_OK}{BOLD}完成！{RESET}")
+        _webui_send({"type": "progress", "stage": "載入中", "detail": "NLLB 離線翻譯模型"})
+        # 檢查 config.json 是否存在（新版 ctranslate2 需要，舊模型可能缺少）
+        _cfg_path = os.path.join(NLLB_MODEL_DIR, "config.json")
+        if not os.path.exists(_cfg_path):
+            print(f"\n  {C_DIM}模型缺少 config.json，正在重新下載...{RESET}", end=" ", flush=True)
+            try:
+                from huggingface_hub import snapshot_download as _hf_dl
+                _hf_dl("JustFrederik/nllb-200-distilled-600M-ct2-int8",
+                       local_dir=NLLB_MODEL_DIR)
+                print(f"{C_OK}✓{RESET}")
+            except Exception as _e:
+                print(f"\n  {C_HIGHLIGHT}[警告] 自動修復失敗: {_e}{RESET}")
+        try:
+            self.sp = sentencepiece.SentencePieceProcessor()
+            self.sp.Load(os.path.join(NLLB_MODEL_DIR, "sentencepiece.bpe.model"))
+            self.ct2 = ctranslate2.Translator(
+                NLLB_MODEL_DIR, device="cpu", compute_type="int8"
+            )
+            print(f"{C_OK}{BOLD}完成！{RESET}")
+        except Exception as e:
+            print(f"\n{C_HIGHLIGHT}[錯誤] NLLB 模型載入失敗: {e}{RESET}", file=sys.stderr)
+            print(f"  {C_DIM}請刪除模型後重新安裝：{RESET}")
+            print(f"  {C_WHITE}rm -rf {NLLB_MODEL_DIR}{RESET}")
+            print(f"  {C_WHITE}{_INSTALL_CMD}{RESET}")
+            _webui_send({"type": "progress", "stage": "錯誤", "detail": f"NLLB 模型載入失敗: {e}"})
+            raise
 
     def _translate_short(self, text):
         """翻譯單句"""
@@ -2038,9 +2334,11 @@ def _live_output_line(line, write_lock):
 
 
 def _llm_generate(prompt, model, host, port, server_type, stream=False,
-                  timeout=30, spinner=None, live_output=False, think=None):
+                  timeout=30, spinner=None, live_output=False, think=None,
+                  on_line=None):
     """統一 LLM 生成介面，支援 Ollama 原生 API 和 OpenAI 相容 API
-    think: True=啟用思考模式, False=關閉思考模式, None=不指定（由模型預設）"""
+    think: True=啟用思考模式, False=關閉思考模式, None=不指定（由模型預設）
+    on_line: 串流模式下每收到完整一行時呼叫 on_line(line_text)"""
     write_lock = getattr(spinner, '_lock', None)
 
     if server_type == "openai":
@@ -2109,11 +2407,14 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
                     token_count += 1
                     if spinner:
                         spinner.update_tokens(token_count)
-                    if live_output:
+                    if live_output or on_line:
                         line_buf += token
                         while "\n" in line_buf:
                             out_line, line_buf = line_buf.split("\n", 1)
-                            _live_output_line(out_line, write_lock)
+                            if live_output:
+                                _live_output_line(out_line, write_lock)
+                            if on_line:
+                                on_line(out_line)
                 # 檢查 finish_reason
                 if choices[0].get("finish_reason"):
                     break
@@ -2133,16 +2434,22 @@ def _llm_generate(prompt, model, host, port, server_type, stream=False,
                     token_count += 1
                     if spinner:
                         spinner.update_tokens(token_count)
-                    if live_output:
+                    if live_output or on_line:
                         line_buf += token
                         while "\n" in line_buf:
                             out_line, line_buf = line_buf.split("\n", 1)
-                            _live_output_line(out_line, write_lock)
+                            if live_output:
+                                _live_output_line(out_line, write_lock)
+                            if on_line:
+                                on_line(out_line)
                 if chunk.get("done", False):
                     break
     # 輸出殘餘緩衝
-    if live_output and line_buf.strip():
-        _live_output_line(line_buf, write_lock)
+    if line_buf.strip():
+        if live_output:
+            _live_output_line(line_buf, write_lock)
+        if on_line:
+            on_line(line_buf)
     return response_text.strip()
 
 
@@ -3375,7 +3682,7 @@ def _input_interactive_menu(args):
                 num_speakers = 2
 
         # ── 第五步：摘要 ──
-        # 非翻譯模式時，前面未偵測 LLM 伺服器，在此靜默偵測（摘要需要 LLM）
+        # 非翻譯模式時，前面未偵測 LLM 伺服器，在此靜默偵測（摘要/校正需要 LLM）
         if not need_translate and ollama_host and llm_server_type is None:
             llm_server_type, _ = _check_llm_server(ollama_host, ollama_port)
         _has_llm = llm_server_type is not None and ollama_host is not None
@@ -3383,8 +3690,9 @@ def _input_interactive_menu(args):
             default_summarize = 0
             summarize_options = [
                 ("產出摘要與校正逐字稿", "both"),
+                ("只校正逐字稿（不產出摘要）", "correct_only"),
                 ("只產出摘要", "summary"),
-                ("只產出逐字稿", "transcript"),
+                ("不校正、不摘要（純 ASR 輸出）", "transcript"),
             ]
 
             print(f"\n\n{C_TITLE}{BOLD}▎ 摘要與逐字稿校正{RESET}")
@@ -3417,9 +3725,10 @@ def _input_interactive_menu(args):
             do_summarize = True
             print(f"\n  {C_DIM}（未連線 LLM 伺服器，僅產出逐字稿；摘要與校正需要 LLM）{RESET}")
 
-        # 選了摘要 → 先確認 LLM 伺服器（若翻譯步驟未問過）→ 選摘要模型
+        # 選了摘要或校正 → 先確認 LLM 伺服器（若翻譯步驟未問過）→ 選摘要模型
         summary_model = SUMMARY_DEFAULT_MODEL
-        if do_summarize and summary_mode != "transcript":
+        _need_llm_for_output = do_summarize and summary_mode not in ("transcript",)
+        if _need_llm_for_output:
             if not ollama_asked:
                 default_addr = f"{ollama_host}:{ollama_port}"
                 print(f"\n\n{C_TITLE}{BOLD}▎ LLM 伺服器{RESET}")
@@ -3450,60 +3759,64 @@ def _input_interactive_menu(args):
                     print(f"{C_HIGHLIGHT}未偵測到 LLM 伺服器（{ollama_host}:{ollama_port}）{RESET}")
                     print(f"  {C_HIGHLIGHT}⚠ 摘要功能需要 LLM 伺服器，請確認伺服器已啟動{RESET}")
 
-            # 摘要模型：列出伺服器上所有模型
-            all_summary_models = _llm_list_models(ollama_host, ollama_port, llm_server_type or "ollama")
-            summary_models_list = []
-            for m_name in all_summary_models:
-                desc = next((d for n, d in SUMMARY_MODELS if n == m_name), "")
-                summary_models_list.append((m_name, desc))
-            if not summary_models_list:
-                summary_models_list = [(n, d) for n, d in SUMMARY_MODELS]
-
-            _last_summary = _config.get("last_summary_model")
-            default_sm = 0
-            for i, (name, _) in enumerate(summary_models_list):
-                if name == SUMMARY_DEFAULT_MODEL:
-                    default_sm = i
-                    break
-
-            def _dw_sm(s):
-                return sum(2 if '\u4e00' <= c <= '\u9fff' else 1 for c in s)
-
-            col = max(_dw_sm(name) for name, _ in summary_models_list) + 2
-            print(f"\n\n{C_TITLE}{BOLD}▎ 摘要模型{RESET}")
-            print(f"{C_DIM}{'─' * 60}{RESET}")
-            for i, (name, desc) in enumerate(summary_models_list):
-                padded = name + ' ' * (col - _dw_sm(name))
-                tags = []
-                if i == default_sm:
-                    tags.append(f"{C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
-                if name == _last_summary:
-                    tags.append(f"{C_OK}{REVERSE} 前次使用 {RESET}")
-                tag_str = " ".join(tags)
-                if i == default_sm:
-                    print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {tag_str}")
-                else:
-                    print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}  {tag_str}")
-            # 檢查推薦摘要模型是否存在於伺服器
-            _rec_sm = {n for n, _ in _BUILTIN_SUMMARY_MODELS}
-            _avail_sm = {n for n, _ in summary_models_list}
-            if not _rec_sm & _avail_sm:
-                _rec_sm_list = " / ".join(n for n, _ in _BUILTIN_SUMMARY_MODELS)
-                print(f"  {C_HIGHLIGHT}注意：本 LLM 伺服器未安裝推薦摘要模型（{_rec_sm_list}），摘要品質可能不如預期{RESET}")
-            print(f"{C_DIM}{'─' * 60}{RESET}")
-            print(f"{C_WHITE}按 Enter 使用預設，或輸入編號：{RESET}", end=" ")
-
-            user_input = input().strip()
-            if user_input:
-                try:
-                    sm_idx = int(user_input)
-                    if not (0 <= sm_idx < len(summary_models_list)):
-                        sm_idx = default_sm
-                except ValueError:
-                    sm_idx = default_sm
+            if summary_mode == "correct_only":
+                # 校正用翻譯模型或預設摘要模型，不需選摘要模型
+                summary_model = ollama_model or SUMMARY_DEFAULT_MODEL
             else:
-                sm_idx = default_sm
-            summary_model = summary_models_list[sm_idx][0]
+                # 摘要模型：列出伺服器上所有模型
+                all_summary_models = _llm_list_models(ollama_host, ollama_port, llm_server_type or "ollama")
+                summary_models_list = []
+                for m_name in all_summary_models:
+                    desc = next((d for n, d in SUMMARY_MODELS if n == m_name), "")
+                    summary_models_list.append((m_name, desc))
+                if not summary_models_list:
+                    summary_models_list = [(n, d) for n, d in SUMMARY_MODELS]
+
+                _last_summary = _config.get("last_summary_model")
+                default_sm = 0
+                for i, (name, _) in enumerate(summary_models_list):
+                    if name == SUMMARY_DEFAULT_MODEL:
+                        default_sm = i
+                        break
+
+                def _dw_sm(s):
+                    return sum(2 if '\u4e00' <= c <= '\u9fff' else 1 for c in s)
+
+                col = max(_dw_sm(name) for name, _ in summary_models_list) + 2
+                print(f"\n\n{C_TITLE}{BOLD}▎ 摘要模型{RESET}")
+                print(f"{C_DIM}{'─' * 60}{RESET}")
+                for i, (name, desc) in enumerate(summary_models_list):
+                    padded = name + ' ' * (col - _dw_sm(name))
+                    tags = []
+                    if i == default_sm:
+                        tags.append(f"{C_HIGHLIGHT}{REVERSE} 預設 {RESET}")
+                    if name == _last_summary:
+                        tags.append(f"{C_OK}{REVERSE} 前次使用 {RESET}")
+                    tag_str = " ".join(tags)
+                    if i == default_sm:
+                        print(f"  {C_HIGHLIGHT}{BOLD}[{i}] {padded}{RESET} {C_WHITE}{desc}{RESET}  {tag_str}")
+                    else:
+                        print(f"  {C_DIM}[{i}]{RESET} {C_WHITE}{padded}{RESET} {C_DIM}{desc}{RESET}  {tag_str}")
+                # 檢查推薦摘要模型是否存在於伺服器
+                _rec_sm = {n for n, _ in _BUILTIN_SUMMARY_MODELS}
+                _avail_sm = {n for n, _ in summary_models_list}
+                if not _rec_sm & _avail_sm:
+                    _rec_sm_list = " / ".join(n for n, _ in _BUILTIN_SUMMARY_MODELS)
+                    print(f"  {C_HIGHLIGHT}注意：本 LLM 伺服器未安裝推薦摘要模型（{_rec_sm_list}），摘要品質可能不如預期{RESET}")
+                print(f"{C_DIM}{'─' * 60}{RESET}")
+                print(f"{C_WHITE}按 Enter 使用預設，或輸入編號：{RESET}", end=" ")
+
+                user_input = input().strip()
+                if user_input:
+                    try:
+                        sm_idx = int(user_input)
+                        if not (0 <= sm_idx < len(summary_models_list)):
+                            sm_idx = default_sm
+                    except ValueError:
+                        sm_idx = default_sm
+                else:
+                    sm_idx = default_sm
+                summary_model = summary_models_list[sm_idx][0]
             # 記住本次使用的摘要模型
             if summary_model != _config.get("last_summary_model"):
                 _config["last_summary_model"] = summary_model
@@ -3563,10 +3876,12 @@ def _input_interactive_menu(args):
         elif diarize_desc != "關閉":
             diarize_desc += "，本機"
         print(f"  {C_OK}  講者辨識: {diarize_desc}{RESET}")
-        if do_summarize and summary_mode != "transcript":
+        if do_summarize and summary_mode in ("both", "summary"):
             print(f"  {C_OK}  摘要模型: {summary_model}{RESET}  {C_DIM}@ {ollama_host}:{ollama_port}{RESET}")
-        elif do_summarize:
-            print(f"  {C_OK}  輸出: 逐字稿{RESET}")
+        if do_summarize and summary_mode in ("both", "correct_only"):
+            print(f"  {C_OK}  LLM 校正: 啟用{RESET}  {C_DIM}@ {ollama_host}:{ollama_port}{RESET}")
+        elif do_summarize and summary_mode == "transcript":
+            print(f"  {C_OK}  輸出: 純 ASR 逐字稿{RESET}")
         if meeting_topic:
             print(f"  {C_OK}  會議主題: {meeting_topic}{RESET}")
         print()
@@ -3786,6 +4101,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
             print(f"\n  {C_OK}✓ 錄音已儲存: {rec_path}{RESET}", flush=True)
             print(f"  {C_DIM}提示: 可再次執行本程式，選擇「讀入檔案」匯入錄音檔，產生逐字稿校正與 AI 摘要{RESET}", flush=True)
         print(f"\n{C_DIM}正在停止...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "正在停止", "detail": ""})
         proc.terminate()
         try:
             proc.wait(timeout=3)
@@ -3802,6 +4118,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
     # 監控 whisper-stream 的 stderr 來偵測啟動狀態
     # 等待模型載入完成
     print(f"{C_DIM}正在載入 whisper 模型（首次可能需要幾秒）...{RESET}", flush=True)
+    _webui_send({"type": "progress", "stage": "載入中", "detail": "whisper 模型"})
 
     # 用一個非阻塞方式讀 stderr
     def read_stderr():
@@ -3834,6 +4151,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
         "ja": "說日文即可看到字幕",
     }
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
+    _webui_send({"type": "progress", "stage": "", "detail": ""})
     _webui_send({"type": "started", "mode": mode})
 
     # 設定底部固定狀態列（快捷鍵提示 + 即時資訊）
@@ -3983,6 +4301,10 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                             timestamp = time.strftime("%H:%M:%S")
                             with open(log_path, "a", encoding="utf-8") as log_f:
                                 log_f.write(f"[{timestamp}] [EN] {line}\n\n")
+                            _webui_send({"type": "transcription", "source": "main",
+                                         "src_lang": "EN", "src_text": line,
+                                         "asr_time": round(_asr_elapsed, 1),
+                                         "timestamp": timestamp})
                         else:
                             # 英翻中：原文延後到翻譯完成時一起顯示
                             last_translated = line
@@ -4011,6 +4333,10 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                             timestamp = time.strftime("%H:%M:%S")
                             with open(log_path, "a", encoding="utf-8") as log_f:
                                 log_f.write(f"[{timestamp}] [{_src_l}] {line}\n\n")
+                            _webui_send({"type": "transcription", "source": "main",
+                                         "src_lang": _src_l, "src_text": line,
+                                         "asr_time": round(_asr_elapsed, 1),
+                                         "timestamp": timestamp})
                         else:
                             # ja2zh：原文延後到翻譯完成時一起顯示
                             last_translated = line
@@ -4034,7 +4360,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                         if any(kw in line for kw in (
                             "訂閱", "點贊", "點讚", "轉發", "打賞",
                             "感謝觀看", "謝謝大家", "謝謝收看",
-                            "字幕由", "字幕提供",
+                            "字幕由", "字幕提供", "字幕by", "字幕BY",
                             "獨播", "劇場", "YoYo", "Television Series",
                             "歡迎訂閱", "明鏡", "新聞頻道",
                         )):
@@ -4060,7 +4386,7 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                         if any(kw in line for kw in (
                             "訂閱", "點贊", "點讚", "轉發", "打賞",
                             "感謝觀看", "謝謝大家", "謝謝收看",
-                            "字幕由", "字幕提供",
+                            "字幕由", "字幕提供", "字幕by", "字幕BY",
                             "獨播", "劇場", "YoYo", "Television Series",
                             "歡迎訂閱", "明鏡", "新聞頻道",
                         )):
@@ -4074,6 +4400,10 @@ def run_stream(capture_id: int, translator, model_name: str, model_path: str,
                         timestamp = time.strftime("%H:%M:%S")
                         with open(log_path, "a", encoding="utf-8") as log_f:
                             log_f.write(f"[{timestamp}] [中] {line}\n\n")
+                        _webui_send({"type": "transcription", "source": "main",
+                                     "src_lang": "中", "src_text": line,
+                                     "asr_time": round(_asr_elapsed, 1),
+                                     "timestamp": timestamp})
 
             time.sleep(0.1)
 
@@ -4120,6 +4450,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
     # 取得 Moonshine 模型
     arch = _moonshine_model_arch(moonshine_model_name)
     print(f"{C_DIM}正在載入 Moonshine 模型 ({moonshine_model_name})...{RESET}", flush=True)
+    _webui_send({"type": "progress", "stage": "載入中", "detail": f"Moonshine 模型（{moonshine_model_name}）"})
     model_path, model_arch = get_model_for_language("en", arch)
 
     # 翻譯記錄檔
@@ -4307,6 +4638,10 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
                     timestamp = time.strftime("%H:%M:%S")
                     with open(log_path, "a", encoding="utf-8") as log_f:
                         log_f.write(f"[{timestamp}] [EN] {text}\n\n")
+                    _webui_send({"type": "transcription", "source": "main",
+                                 "src_lang": "EN", "src_text": text,
+                                 "asr_time": round(asr_elapsed, 1),
+                                 "timestamp": timestamp})
                 else:
                     # en2zh：原文延後到翻譯完成時一起顯示
                     with print_lock:
@@ -4485,6 +4820,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
         restore_terminal()
         _cleanup_moonshine()
         print(f"\n{C_DIM}正在停止...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "正在停止", "detail": ""})
         _force_exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -4502,6 +4838,7 @@ def run_stream_moonshine(capture_id: int, translator, moonshine_model_name: str,
         "en": "說英文即可看到字幕",
     }
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
+    _webui_send({"type": "progress", "stage": "", "detail": ""})
     _webui_send({"type": "started", "mode": mode})
 
     # 設定狀態列
@@ -4558,9 +4895,11 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
     print(f"{C_DIM}{'─' * 60}{RESET}")
     rs_label = "重啟" if force_restart else "啟動"
     print(f"  {C_DIM}{rs_label}伺服器 Whisper 伺服器（{rw_host}）...{RESET}", end="", flush=True)
+    _webui_send({"type": "progress", "stage": "載入中", "detail": f"{rs_label} GPU 伺服器（{rw_host}）"})
     _inline_spinner(_remote_whisper_start, remote_cfg, force_restart=force_restart)
     print(f" {C_OK}✓{RESET}")
     print(f"  {C_DIM}等待伺服器就緒...{RESET}", end="", flush=True)
+    _webui_send({"type": "progress", "stage": "載入中", "detail": "等待 GPU 伺服器就緒"})
     try:
         ok, has_gpu = _inline_spinner(_remote_whisper_health, remote_cfg, timeout=30)
     except Exception:
@@ -4574,6 +4913,7 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
     print(f" {C_OK}就緒（{gpu_label}）{RESET}")
     # 預熱：送一段靜音讓伺服器載入模型到 GPU（首次可能需 30-60 秒）
     print(f"  {C_DIM}載入模型 {C_WHITE}{model_name}{C_DIM} 到 {gpu_label}（首次可能需 30-60 秒）...{RESET}", end="", flush=True)
+    _webui_send({"type": "progress", "stage": "載入中", "detail": f"載入模型 {model_name} 到 {gpu_label}"})
     import numpy as _np_warmup
     _warmup_t0 = time.monotonic()
     try:
@@ -4987,6 +5327,7 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
         restore_terminal()
         _cleanup_remote()
         print(f"\n{C_DIM}正在停止...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "正在停止", "detail": ""})
         _force_exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -5009,6 +5350,7 @@ def run_stream_remote(capture_id: int, translator, model_name: str,
         "ja": "說日文即可看到字幕",
     }
     print(f"{C_OK}{BOLD}開始監聽...{RESET} {C_WHITE}{listen_hints.get(mode, '')}{RESET}\n\n", flush=True)
+    _webui_send({"type": "progress", "stage": "", "detail": ""})
     _webui_send({"type": "started", "mode": mode})
 
     _tr_model = translator.model if isinstance(translator, OllamaTranslator) else ("NLLB" if isinstance(translator, NllbTranslator) else ("Argos" if isinstance(translator, ArgosTranslator) else ""))
@@ -5142,10 +5484,12 @@ def run_stream_local_whisper(capture_id: int, translator, model_name: str,
         _sz = _fw_model_sizes.get(model_name, "")
         _sz_hint = f"（約 {_sz}）" if _sz else ""
         print(f"\n{C_WARN}首次使用 faster-whisper，正在下載模型 ({model_name}){_sz_hint}...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "載入中", "detail": f"下載 faster-whisper 模型（{model_name}）"})
         print(f"  {C_DIM}faster-whisper 格式與 whisper-stream 的 ggml 格式不同，需另外下載{RESET}")
         print(f"  {C_DIM}下載完成後會快取，之後不需重新下載{RESET}")
     else:
         print(f"\n{C_DIM}正在載入 Whisper 模型 ({model_name})...{RESET}", end="", flush=True)
+        _webui_send({"type": "progress", "stage": "載入中", "detail": f"Whisper 模型（{model_name}）"})
     t0 = time.monotonic()
     import warnings, logging
     _hf_logger = logging.getLogger("huggingface_hub")
@@ -5573,6 +5917,7 @@ def run_stream_local_whisper(capture_id: int, translator, model_name: str,
         restore_terminal()
         _cleanup_local()
         print(f"\n{C_DIM}正在停止...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "正在停止", "detail": ""})
         _force_exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -5776,10 +6121,12 @@ def run_stream_bidirectional(lb_device_id, mic_device_id,
             _sz = _fw_model_sizes.get(model_name, "")
             _sz_hint = f"（約 {_sz}）" if _sz else ""
             print(f"\n{C_WARN}首次使用 mlx-whisper，正在下載模型 ({model_name}){_sz_hint}...{RESET}", flush=True)
+            _webui_send({"type": "progress", "stage": "載入中", "detail": f"下載 MLX Whisper 模型（{model_name}）"})
             print(f"  {C_DIM}mlx-whisper 使用 MLX 格式（Apple Silicon GPU 加速）{RESET}")
             print(f"  {C_DIM}下載完成後會快取，之後不需重新下載{RESET}")
         else:
             print(f"\n{C_DIM}正在載入 MLX Whisper 模型 ({model_name})...{RESET}", end="", flush=True)
+            _webui_send({"type": "progress", "stage": "載入中", "detail": f"MLX Whisper 模型（{model_name}）"})
         t0 = time.monotonic()
         # 用極短靜音 WAV 預熱（首次 transcribe 時才真正載入權重）
         import tempfile as _tempfile_warmup
@@ -5896,10 +6243,12 @@ def run_stream_bidirectional(lb_device_id, mic_device_id,
             _sz = _fw_model_sizes.get(model_name, "")
             _sz_hint = f"（約 {_sz}）" if _sz else ""
             print(f"\n{C_WARN}首次使用 faster-whisper，正在下載模型 ({model_name}){_sz_hint}...{RESET}", flush=True)
+            _webui_send({"type": "progress", "stage": "載入中", "detail": f"下載 faster-whisper 模型（{model_name}）"})
             print(f"  {C_DIM}雙向模式使用 faster-whisper 格式（與 whisper-stream 的 ggml 格式不同）{RESET}")
             print(f"  {C_DIM}下載完成後會快取，之後不需重新下載{RESET}")
         else:
             print(f"\n{C_DIM}正在載入 Whisper 模型 ({model_name})...{RESET}", end="", flush=True)
+            _webui_send({"type": "progress", "stage": "載入中", "detail": f"Whisper 模型（{model_name}）"})
         t0 = time.monotonic()
         import warnings, logging
         _hf_logger = logging.getLogger("huggingface_hub")
@@ -6170,8 +6519,8 @@ def run_stream_bidirectional(lb_device_id, mic_device_id,
     if model_name not in _PROMPT_CAPABLE_MODELS:
         _WHISPER_PROMPT = {"zh": None, "en": None, "ja": None}
     # 安全過濾：即使 prompt 洩漏到辨識結果，也會被移除
-    _PROMPT_LEAK_TEXTS = {"以下是繁體中文語音內容", "請使用繁體中文輸出",
-                          "以下是繁体中文语音内容", "请使用繁体中文输出",
+    _PROMPT_LEAK_TEXTS = {"以下是繁體中文語音內容", "請使用繁體中文輸出", "請使用繁體中文",
+                          "以下是繁体中文语音内容", "请使用繁体中文输出", "请使用繁体中文",
                           "以下は日本語の音声です"}
 
     if use_mlx:
@@ -6690,6 +7039,7 @@ def run_stream_bidirectional(lb_device_id, mic_device_id,
         restore_terminal()
         _cleanup_bidi()
         print(f"\n{C_DIM}正在停止...{RESET}", flush=True)
+        _webui_send({"type": "progress", "stage": "正在停止", "detail": ""})
         # 一律用 os._exit() 避免 atexit/thread 清理造成卡住
         _force_exit(0)
 
@@ -6728,6 +7078,7 @@ def run_stream_bidirectional(lb_device_id, mic_device_id,
     else:
         _listen_mic_hint = f"{_mic_color}▶ 麥克風（{_mic_dir}）{RESET}"
     print(f"\n{C_OK}{BOLD}開始監聽...{RESET} {C_OK}◀ 系統音訊（{_lb_dir}）{RESET}  {_listen_mic_hint}\n\n", flush=True)
+    _webui_send({"type": "progress", "stage": "", "detail": ""})
     _webui_send({"type": "started", "mode": mode})
 
     _tr_model = translator_lb.model if isinstance(translator_lb, OllamaTranslator) else ("NLLB" if isinstance(translator_lb, NllbTranslator) else "")
@@ -7048,6 +7399,7 @@ class _AudioRecorder:
             spin_idx = 0
             start_t = time.monotonic()
             timeout_s = 300
+            _webui_send({"type": "progress", "stage": "存檔中", "detail": f"錄音轉檔 WAV → {fmt_upper}"})
             while not ffmpeg_done.is_set():
                 pct = progress_pct[0]
                 ch = spinner_chars[spin_idx % len(spinner_chars)]
@@ -7074,8 +7426,10 @@ class _AudioRecorder:
                 except OSError:
                     out_str = ""
                 print(f"{C_OK}✓ WAV → {fmt_upper} 轉檔完成{out_str}{RESET}")
+                _webui_send({"type": "progress", "stage": "存檔完成", "detail": f"{fmt_upper} {out_str}"})
             else:
                 print(f"{C_WARN}[警告] 錄音轉 {fmt} 失敗（保留 WAV）{RESET}")
+                _webui_send({"type": "progress", "stage": "存檔", "detail": f"轉檔失敗，保留 WAV"})
         except Exception:
             # 清除可能殘留的 spinner
             sys.stdout.write("\r\x1b[2K")
@@ -8257,15 +8611,15 @@ class _SummaryStatusBar:
                         old_rows = self._last_rows
                         self._last_rows = rows
                         with self._lock:
-                            if old_rows and old_rows != rows:
-                                # 解除 scroll region，清除舊/新之間所有列的殘影
-                                buf = "\x1b[r"
-                                lo = min(old_rows, rows)
-                                hi = max(old_rows, rows)
-                                for r in range(lo, hi + 1):
-                                    buf += f"\x1b[{r};1H\x1b[2K"
-                                sys.stdout.write(buf)
+                            # 1. 解除 scroll region
+                            sys.stdout.write("\x1b[r")
+                            # 2. 清除舊 bar 位置和新 bar 位置
+                            if old_rows:
+                                sys.stdout.write(f"\x1b[{old_rows};1H\x1b[2K")
+                            sys.stdout.write(f"\x1b[{rows};1H\x1b[2K")
+                            # 3. 重設 scroll region（保留最後一行給 bar）
                             sys.stdout.write(f"\x1b[1;{rows - 1}r")
+                            # 4. 游標移到 scroll region 底部
                             sys.stdout.write(f"\x1b[{rows - 1};1H")
                             sys.stdout.flush()
                     except Exception:
@@ -8352,12 +8706,13 @@ class _SummaryStatusBar:
 
 
 def call_ollama_raw(prompt, model, host, port, timeout=300, spinner=None, live_output=False,
-                    server_type="ollama", think=None):
+                    server_type="ollama", think=None, on_line=None):
     """直接呼叫 LLM API 取得回應（串流模式，可更新 spinner 進度或即時輸出）"""
     return _llm_generate(
         prompt, model, host, port, server_type,
         stream=True, timeout=timeout,
         spinner=spinner, live_output=live_output, think=think,
+        on_line=on_line,
     )
 
 
@@ -8414,10 +8769,29 @@ def _correct_segments_with_llm(segments_data, model, host, port, server_type="ol
 
             # timeout 依 chunk 字數動態調整（每千字 60 秒，最低 300 秒）
             _timeout = max(300, len(numbered_lines) // 1000 * 60 + 300)
+
+            # 即時推送每行校正結果到 WebUI
+            def _on_correct_line(line_text, _chunk=chunk):
+                line_text = line_text.strip()
+                m = re.match(r'^(\d+)\|(.+)$', line_text)
+                if not m:
+                    return
+                local_idx = int(m.group(1)) - 1
+                corrected_text = m.group(2).strip()
+                if 0 <= local_idx < len(_chunk):
+                    global_idx = _chunk[local_idx][0]
+                    orig_si, orig_li, orig_text = all_lines[global_idx]
+                    # 只在有變化時推送
+                    if corrected_text != orig_text and corrected_text != "[雜音]":
+                        _corrected_tc = S2TWP.convert(corrected_text)
+                        _webui_send({"type": "correction",
+                                     "original": orig_text,
+                                     "corrected": _corrected_tc})
+
             try:
                 result = call_ollama_raw(prompt, model, host, port, timeout=_timeout,
                                          spinner=sbar, server_type=server_type,
-                                         think=False)
+                                         think=False, on_line=_on_correct_line)
             except Exception as e:
                 print(f"  {C_HIGHLIGHT}[警告] 第 {ci+1}/{total_chunks} 批校正失敗: {e}{RESET}",
                       file=sys.stderr)
@@ -8463,12 +8837,19 @@ def _correct_segments_with_llm(segments_data, model, host, port, server_type="ol
             n_corrected += 1
 
     # 8. 移除 [雜音] 行（反向刪除避免索引偏移）
+    #    保護翻譯配對：如果該段有多行且只有此行被標為雜音，保留（避免只剩譯文沒原文）
+    _SRC_LABELS = {"EN", "英", "日"}
     n_noise = 0
     if noise_markers:
         for si in range(len(segments_data) - 1, -1, -1):
             seg = segments_data[si]
             for li in range(len(seg["lines"]) - 1, -1, -1):
                 if (si, li) in noise_markers:
+                    # 翻譯配對保護：若此行是原文且同段還有譯文，跳過不刪
+                    if len(seg["lines"]) >= 2 and seg["lines"][li]["label"] in _SRC_LABELS:
+                        has_dst = any(ln["label"] not in _SRC_LABELS for j, ln in enumerate(seg["lines"]) if j != li)
+                        if has_dst:
+                            continue  # 保留原文行
                     seg["lines"].pop(li)
                     n_noise += 1
             # 如果整段都被刪光，移除整段
@@ -8583,12 +8964,22 @@ def _is_en_hallucination(text):
     if len(stripped_alpha) < 3:
         return True
     line_lower = text.lower().strip(".")
-    return line_lower in (
+    if line_lower in (
         "you", "the", "bye", "so", "okay",
         "thank you", "thanks for watching",
         "thanks for listening", "see you next time",
         "subscribe", "like and subscribe",
-    )
+        "don't forget to subscribe", "please subscribe",
+        "please subscribe to my channel",
+    ):
+        return True
+    # 關鍵字比對（Amara / 字幕歸屬 / 版權幻覺）
+    return any(kw in line_lower for kw in (
+        "amara.org", "otter.ai", "rev.com", "transcribed by",
+        "subtitles by", "translated by", "captions by",
+        "pomp and circumstance", "sir edward elgar",
+        "© bf-watch", "© transcript",
+    ))
 
 
 def _is_zh_hallucination(text):
@@ -8613,14 +9004,36 @@ def _is_zh_hallucination(text):
         return True
     # 簡體+繁體關鍵字都要檢查（faster-whisper 可能輸出簡體）
     return any(kw in text for kw in (
-        "訂閱", "订阅", "點贊", "点赞", "點讚", "轉發", "转发", "打賞", "打赏",
+        # YouTube 用語
+        "訂閱", "订阅", "歡迎訂閱", "欢迎订阅",
+        "點贊", "点赞", "點讚", "按讚", "轉發", "转发", "打賞", "打赏",
         "感謝觀看", "感谢观看", "謝謝大家", "谢谢大家", "謝謝收看", "谢谢收看",
-        "字幕由", "字幕提供", "字幕志願", "字幕志愿", "字幕組", "字幕组",
+        "感謝收聽", "感谢收听", "感謝聆聽", "感谢聆听",
+        "喜歡的話", "喜欢的话", "別忘了", "别忘了",
+        # 字幕/翻譯歸屬（Amara.org 訓練資料殘留）
+        "字幕由", "字幕提供", "字幕by", "字幕BY", "字幕志願", "字幕志愿", "字幕組", "字幕组",
+        "字幕視聽", "字幕视听", "字幕製作", "字幕制作",
         "翻譯志願", "翻译志愿", "校對志願", "校对志愿",
+        "Amara", "amara",
+        # 版權歸屬幻覺（僅短句時過濾，長句可能是真實討論）
+        "版權所有", "版权所有",
+        "初音ミク", "初音",
+        # 頻道/節目
         "獨播", "独播", "劇場", "剧场", "YoYo", "Television Series",
-        "歡迎訂閱", "欢迎订阅", "明鏡", "明镜", "新聞頻道", "新闻频道",
-        "初音ミク", "初音", "作曲・編曲", "作曲/編曲",
+        "明鏡", "明镜", "新聞頻道", "新闻频道",
+        "直播間", "直播间", "觀眾朋友", "观众朋友",
     ))
+    # 短句限定：音樂/版權歸屬幻覺（長句中出現這些詞可能是真實討論，不過濾）
+    if len(_stripped) <= 10:
+        return any(kw in text for kw in (
+            "詞曲", "词曲", "作詞", "作词", "作曲", "編曲", "编曲",
+            "詞：", "词：", "曲：", "演唱", "原唱",
+            "版權", "版权", "著作權", "著作权",
+            "李宗盛", "周杰倫", "周杰伦", "林俊傑", "林俊杰", "蔡依林",
+            "張惠妹", "张惠妹", "五月天", "陳奕迅", "陈奕迅",
+            "鄧紫棋", "邓紫棋", "王力宏",
+        ))
+    return False
 
 
 def _is_ja_hallucination(text):
@@ -8632,6 +9045,8 @@ def _is_ja_hallucination(text):
     return any(kw in text for kw in (
         "チャンネル登録", "高評価", "ご視聴", "コメント欄",
         "ご覧いただき", "ありがとうございました",
+        "字幕提供", "字幕制作", "翻訳者",
+        "Amara", "amara",
     ))
 
 
@@ -9019,10 +9434,32 @@ def _segments_to_srt(segments_data, srt_path):
             f.write("\n")
 
 
+def _vtt_timestamp(seconds):
+    """秒數 → VTT 時間戳 HH:MM:SS.mmm"""
+    ms = int(round(seconds * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+def _segments_to_vtt(segments_data, vtt_path):
+    """將 segments_data 轉為 WebVTT 字幕檔。翻譯模式自動雙語。"""
+    with open(vtt_path, "w", encoding="utf-8") as f:
+        f.write("WEBVTT\n\n")
+        for i, seg in enumerate(segments_data, 1):
+            f.write(f"{i}\n")
+            f.write(f"{_vtt_timestamp(seg['start'])} --> {_vtt_timestamp(seg['end'])}\n")
+            for line in seg["lines"]:
+                f.write(f"{line['text']}\n")
+            f.write("\n")
+
+
 def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo",
                        diarize=False, num_speakers=None, remote_whisper_cfg=None,
                        correct_with_llm=False, llm_model=None, llm_host=None,
-                       llm_port=None, llm_server_type=None, meeting_topic=None):
+                       llm_port=None, llm_server_type=None, meeting_topic=None,
+                       gen_srt=True, gen_vtt=True):
     """處理音訊檔：ffmpeg 轉檔 → faster-whisper 辨識 → 翻譯 → 存檔，回傳 (log_path, html_path, session_dir)"""
     from datetime import datetime
     import shutil
@@ -9422,12 +9859,16 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
             if _srv_label_c:
                 _loc_c += f" ({_srv_label_c})"
             _meta["correct_location"] = _loc_c
-        # 產出 SRT 字幕檔（在 HTML 之前，讓 HTML footer 能偵測到 SRT）
+        # 產出 SRT / VTT 字幕檔（在 HTML 之前，讓 HTML footer 能偵測到）
         _srt = None
         if segments_data:
-            srt_path = os.path.splitext(log_path)[0] + ".srt"
-            _segments_to_srt(segments_data, srt_path)
-            _srt = srt_path
+            if gen_srt:
+                srt_path = os.path.splitext(log_path)[0] + ".srt"
+                _segments_to_srt(segments_data, srt_path)
+                _srt = srt_path
+            if gen_vtt:
+                vtt_path = os.path.splitext(log_path)[0] + ".vtt"
+                _segments_to_vtt(segments_data, vtt_path)
 
         if segments_data:
             _transcript_to_html(segments_data, transcript_html_path,
@@ -9439,6 +9880,18 @@ def process_audio_file(input_path, mode, translator, model_size="large-v3-turbo"
                      "detail": f"{seg_count} 段{diarize_info} | {total_str}"})
         print(f"\n{C_DIM}{'═' * 60}{RESET}")
         print(f"  {C_OK}{BOLD}處理完成{RESET} {C_DIM}（共 {seg_count} 段{diarize_info} | 耗時 {total_str}）{RESET}")
+        if seg_count == 0:
+            _mode_lang = {"en2zh": "英文", "zh2en": "中文", "ja2zh": "日文", "zh2ja": "中文",
+                          "en": "英文", "zh": "中文", "ja": "日文",
+                          "en_zh": "英文/中文", "ja_zh": "日文/中文"}
+            _expected = _mode_lang.get(mode, mode)
+            print(f"  {C_HIGHLIGHT}[注意] 辨識結果為 0 段，可能原因：{RESET}")
+            print(f"  {C_HIGHLIGHT}  1. 功能模式選錯（目前: {mode}，期望音訊語言: {_expected}）{RESET}")
+            print(f"  {C_HIGHLIGHT}  2. 音訊檔內容為靜音或非語音{RESET}")
+            print(f"  {C_HIGHLIGHT}  3. 音訊品質太差，辨識引擎無法處理{RESET}")
+            print(f"  {C_DIM}  建議：確認音訊語言後選擇正確的功能模式重新處理{RESET}")
+            _webui_send({"type": "progress", "stage": "注意",
+                         "detail": f"辨識結果為 0 段，請確認功能模式是否正確（目前期望: {_expected}）"})
         print(f"  {C_WHITE}{log_path}{RESET}")
         if _html:
             print(f"  {C_WHITE}{_html}{RESET}")
@@ -9472,7 +9925,8 @@ def process_bidi_audio_files(lb_path, mic_path, mode, translator_lb, translator_
                               model_size="large-v3-turbo", remote_whisper_cfg=None,
                               diarize=False, num_speakers=None,
                               correct_with_llm=False, llm_model=None, llm_host=None,
-                              llm_port=None, llm_server_type=None, meeting_topic=None):
+                              llm_port=None, llm_server_type=None, meeting_topic=None,
+                              gen_srt=True, gen_vtt=True):
     """處理雙向錄音檔：兩路 ASR → 合併 → 翻譯 → 存檔，回傳 (log_path, html_path, session_dir)"""
     from datetime import datetime
     import shutil
@@ -9895,12 +10349,16 @@ def process_bidi_audio_files(lb_path, mic_path, mode, translator_lb, translator_
                 if _detected >= 2:
                     _meta["detected_speakers"] = _detected
 
-        # SRT
+        # SRT / VTT
         _srt = None
         if segments_data:
-            srt_path = os.path.splitext(log_path)[0] + ".srt"
-            _segments_to_srt(segments_data, srt_path)
-            _srt = srt_path
+            if gen_srt:
+                srt_path = os.path.splitext(log_path)[0] + ".srt"
+                _segments_to_srt(segments_data, srt_path)
+                _srt = srt_path
+            if gen_vtt:
+                vtt_path = os.path.splitext(log_path)[0] + ".vtt"
+                _segments_to_vtt(segments_data, vtt_path)
 
         # 用系統音訊的副本作為 HTML 主音訊
         audio_copy = os.path.join(session_dir, os.path.basename(lb_path))
@@ -10043,15 +10501,18 @@ def _fix_speaker_labels_in_text(text):
 
 def summarize_log_file(input_path, model, host, port, server_type="ollama",
                        topic=None, metadata=None, summary_mode="both",
-                       audio_path=""):
+                       audio_path="", summary_rounds=1):
     """讀取記錄檔 → 建 prompt → 呼叫 LLM → 簡繁轉換 → 寫摘要檔
-    summary_mode: "both"（摘要+逐字稿）、"summary"（只摘要）、"transcript"（只逐字稿）
+    summary_mode: "both"（摘要+逐字稿）、"summary"（只摘要）、"correct_only"（只校正）、"transcript"（純 ASR）
+    summary_rounds: 處理次數（1-3），多次處理後整合可提升品質
     回傳 (output_path, summary_text, html_path)"""
     with open(input_path, "r", encoding="utf-8") as f:
         transcript = f.read().strip()
 
     if not transcript:
         print(f"  {C_HIGHLIGHT}[跳過] 檔案內容為空: {input_path}{RESET}")
+        print(f"  {C_DIM}逐字稿為空表示辨識無結果，可能是功能模式與音訊語言不符{RESET}")
+        _webui_send({"type": "progress", "stage": "跳過摘要", "detail": "逐字稿為空，請確認功能模式是否正確"})
         return None, None, None
 
     basename = os.path.basename(input_path)
@@ -10239,6 +10700,95 @@ def summarize_log_file(input_path, model, host, port, server_type="ollama",
         summary = _retry_result.rstrip() + "\n\n" + summary.lstrip()
         print(f"  {C_OK}重點摘要已補上{RESET}")
 
+    # 偵測 LLM 是否跳過校正逐字稿（summary_mode="both" 時應有）
+    if summary_mode == "both" and "## 校正逐字稿" not in summary:
+        print(f"\n  {C_HIGHLIGHT}[偵測] LLM 回覆缺少校正逐字稿，自動補發校正請求...{RESET}")
+        _tc_input = transcript[:max_chars] if len(transcript) > max_chars else transcript
+        _tc_topic = f"（主題：{topic}）" if topic else ""
+        _tc_prompt = f"""\
+你是專業的會議記錄整理員。請將以下語音辨識的逐字稿整理成流暢、易讀的段落文字{_tc_topic}。
+合併斷句、修正錯字，保留原始語意，不要增刪內容。不需要保留時間戳記。
+必須完整輸出所有內容，嚴禁以「以下略」「篇幅限制」等理由截斷或跳過任何段落。
+全部使用台灣繁體中文。
+
+輸出格式：
+
+## 校正逐字稿
+
+（整理後的完整文字）
+
+以下是逐字稿：
+---
+{_tc_input}
+---"""
+        sbar_tc = _SummaryStatusBar(model=model, task="補產校正逐字稿", location=_llm_loc).start()
+        _tc_result = call_ollama_raw(_tc_prompt, model, host, port, spinner=sbar_tc,
+                                      live_output=True, server_type=server_type)
+        sbar_tc.stop()
+        _tc_result = S2TWP.convert(_tc_result)
+        summary = summary.rstrip() + "\n\n" + _tc_result.lstrip()
+        print(f"  {C_OK}校正逐字稿已補上{RESET}")
+
+    # 多次處理：重新產生摘要並整合（提升品質）
+    if summary_rounds > 1:
+        round_results = [summary]
+        for ri in range(2, min(summary_rounds, 3) + 1):
+            print(f"\n  {C_WHITE}第 {ri}/{summary_rounds} 次摘要處理...{RESET}")
+            _webui_send({"type": "progress", "stage": f"生成摘要（{model}）",
+                         "detail": f"第 {ri}/{summary_rounds} 次處理"})
+            sbar_r = _SummaryStatusBar(model=model, task=f"第 {ri} 次摘要", location=_llm_loc).start()
+            if len(chunks) <= 1:
+                _r_prompt = _summary_prompt(transcript, topic=topic, summary_mode=summary_mode)
+                _r_result = call_ollama_raw(_r_prompt, model, host, port, spinner=sbar_r,
+                                            live_output=False, server_type=server_type)
+            else:
+                _r_segs = []
+                for ci, chunk in enumerate(chunks):
+                    sbar_r.set_task(f"第 {ri} 次 - 段 {ci+1}/{len(chunks)}")
+                    _r_prompt = _summary_prompt(chunk, topic=topic, summary_mode=summary_mode)
+                    _r_seg = call_ollama_raw(_r_prompt, model, host, port, spinner=sbar_r,
+                                             live_output=False, server_type=server_type)
+                    _r_segs.append(S2TWP.convert(_r_seg))
+                sbar_r.set_task(f"第 {ri} 次 - 合併")
+                _r_combined = "\n\n---\n\n".join(
+                    f"### 第 {i+1} 段\n{s}" for i, s in enumerate(_r_segs))
+                _r_merge_prompt = SUMMARY_MERGE_PROMPT_TEMPLATE.format(summaries=_r_combined)
+                _r_result = call_ollama_raw(_r_merge_prompt, model, host, port, spinner=sbar_r,
+                                            live_output=False, server_type=server_type)
+            sbar_r.freeze()
+            sbar_r.stop()
+            round_results.append(S2TWP.convert(_r_result))
+        # 整合多次結果
+        print(f"\n  {C_WHITE}整合 {len(round_results)} 次摘要結果...{RESET}")
+        _webui_send({"type": "progress", "stage": f"生成摘要（{model}）",
+                     "detail": f"整合 {len(round_results)} 次結果"})
+        sbar_m = _SummaryStatusBar(model=model, task="整合摘要", location=_llm_loc).start()
+        # 整合時考慮 context window：每次結果截斷到 max_chars / 次數，確保總量不超限
+        _per_round_limit = max(max_chars // len(round_results), 2000)
+        _truncated_results = []
+        for i, r in enumerate(round_results):
+            if len(r) > _per_round_limit:
+                r = r[:_per_round_limit] + f"\n\n（第 {i+1} 次摘要過長，已截斷至 {_per_round_limit} 字）"
+            _truncated_results.append(r)
+        _merge_input = "\n\n" + "=" * 40 + "\n\n".join(
+            f"【第 {i+1} 次摘要】\n{r}" for i, r in enumerate(_truncated_results))
+        _merge_prompt = (
+            "以下是同一份會議逐字稿經過多次 AI 摘要處理的結果。"
+            "請整合這些摘要，取各版本的最佳內容，產出一份完整、準確、不遺漏的最終摘要。"
+            "如果某個版本有提到其他版本遺漏的重點，請納入。"
+            "如果有校正逐字稿，以最完整的版本為準。"
+            "全部使用台灣繁體中文。\n\n" + _merge_input
+        )
+        summary = call_ollama_raw(_merge_prompt, model, host, port, spinner=sbar_m,
+                                   live_output=True, server_type=server_type)
+        sbar_m.freeze()
+        sbar_m.stop()
+
+    # 標題格式修正（在所有補發和整合之後）：LLM 有時輸出 ### 或其他標題格式，統一修正
+    import re as _re_fmt
+    summary = _re_fmt.sub(r'#{2,4}\s*(?:最終)?(?:重點)?摘要', '## 重點摘要', summary)
+    summary = _re_fmt.sub(r'#{2,4}\s*(?:校正)?逐字稿', '## 校正逐字稿', summary)
+
     summary = S2TWP.convert(summary)
 
     # 校正逐字稿：LLM 漏掉的 Speaker 標籤，自動補上（與 HTML 邏輯對齊）
@@ -10387,7 +10937,23 @@ def _summary_to_html(summary_text, html_path, source_name="",
                 spk_label = html_mod.escape(f"Speaker {current_speaker}：")
                 body_parts.append(f'<p class="speaker" style="color:{color}"><strong>{spk_label}</strong>{escaped}</p>')
             else:
-                body_parts.append(f"<p>{escaped}</p>")
+                # 超長段落（LLM 未分段的校正逐字稿）→ 每 5 句左右自動插入段落分隔
+                if len(s) > 500:
+                    sentences = re.split(r'(?<=[。！？.!?])\s*', s)
+                    chunk, chunks = [], []
+                    for sent in sentences:
+                        chunk.append(sent)
+                        if len(chunk) >= 5:
+                            chunks.append("".join(chunk))
+                            chunk = []
+                    if chunk:
+                        chunks.append("".join(chunk))
+                    for c in chunks:
+                        c_esc = html_mod.escape(c)
+                        c_esc = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', c_esc)
+                        body_parts.append(f"<p>{c_esc}</p>")
+                else:
+                    body_parts.append(f"<p>{escaped}</p>")
 
     if in_ol:
         body_parts.append("</ol>")
@@ -10417,6 +10983,10 @@ def _summary_to_html(summary_text, html_path, source_name="",
         _srt_full = os.path.join(os.path.dirname(html_path), _srt_bn)
         if os.path.isfile(_srt_full):
             footer_links.append(f'<a href="{html_mod.escape(_srt_bn)}">字幕檔 (SRT)</a>')
+        _vtt_bn = os.path.splitext(os.path.basename(transcript_txt_path))[0] + ".vtt"
+        _vtt_full = os.path.join(os.path.dirname(html_path), _vtt_bn)
+        if os.path.isfile(_vtt_full):
+            footer_links.append(f'<a href="{html_mod.escape(_vtt_bn)}">字幕檔 (VTT)</a>')
     if audio_path and os.path.isfile(audio_path):
         _html_dir = os.path.dirname(os.path.abspath(html_path))
         _audio_rel = os.path.relpath(os.path.abspath(audio_path), _html_dir)
@@ -10756,6 +11326,10 @@ def _transcript_to_html(segments_data, html_path, audio_path, audio_duration,
     _srt_full = os.path.join(os.path.dirname(html_path), _srt_bn)
     if os.path.isfile(_srt_full):
         footer_links.append(f'<a href="{html_mod.escape(_srt_bn)}">字幕檔 (SRT)</a>')
+    _vtt_bn = os.path.splitext(os.path.basename(txt_path))[0] + ".vtt"
+    _vtt_full = os.path.join(os.path.dirname(html_path), _vtt_bn)
+    if os.path.isfile(_vtt_full):
+        footer_links.append(f'<a href="{html_mod.escape(_vtt_bn)}">字幕檔 (VTT)</a>')
     _audio_ext = os.path.splitext(audio_path)[1].lstrip(".").upper() or "音訊"
     footer_links.append(f'<a href="{audio_src}">音訊檔案 ({_audio_ext})</a>')
     footer_links = [l.replace("<a ", '<a target="_blank" ') for l in footer_links]
@@ -11164,7 +11738,7 @@ def _push_rms(rms):
             hist.append(rms)
     # WebUI RMS（每 0.5 秒最多送一次，避免洪水）
     now = time.monotonic()
-    if _webui_queue is not None and now - _webui_rms_last[0] > 1.0:
+    if _webui_queue is not None and now - _webui_rms_last[0] > 0.2:
         _webui_rms_last[0] = now
         _webui_send({"type": "rms", "value": round(rms, 4)})
 
@@ -11514,6 +12088,9 @@ def parse_args():
         "--rec-device", type=int, metavar="ID",
         help="錄音裝置 ID (可與 ASR 裝置不同，例如聚集裝置可同時錄雙方聲音)")
     parser.add_argument(
+        "--mic-device", type=int, metavar="ID",
+        help="麥克風裝置 ID（--mic 或雙向模式時指定麥克風輸入裝置）")
+    parser.add_argument(
         "--input", nargs="+", metavar="FILE",
         help="離線處理音訊檔 (mp3/wav/m4a/flac 等，用 faster-whisper 辨識)")
     parser.add_argument(
@@ -11522,6 +12099,9 @@ def parse_args():
     parser.add_argument(
         "--summary-model", metavar="MODEL", default=SUMMARY_DEFAULT_MODEL,
         help=f"摘要用的 LLM 模型 (預設 {SUMMARY_DEFAULT_MODEL})")
+    parser.add_argument(
+        "--summary-rounds", type=int, metavar="N", default=1,
+        help="摘要處理次數（1-3，多次處理後整合可提升品質，預設 1）")
     parser.add_argument(
         "--diarize", action="store_true",
         help="講者辨識（需搭配 --input，用 resemblyzer + spectralcluster）")
@@ -11538,8 +12118,17 @@ def parse_args():
         "--local-asr", action="store_true",
         help="強制使用本機 辨識（忽略GPU 伺服器 設定，即時模式與離線模式皆適用）")
     parser.add_argument(
+        "--no-srt", action="store_true",
+        help="離線處理不產生 SRT 字幕檔")
+    parser.add_argument(
+        "--no-vtt", action="store_true",
+        help="離線處理不產生 VTT 字幕檔")
+    parser.add_argument(
         "--restart-server", action="store_true",
         help="強制重啟GPU 伺服器（更新 server.py 後使用）")
+    parser.add_argument(
+        "--subtitle-overlay", action="store_true",
+        help="啟動桌面懸浮字幕覆蓋視窗（需安裝 PyQt6）")
     parser.add_argument(
         "--webui", action="store_true",
         help="同時將即時字幕推送到 WebUI（需另外啟動 webui.py）")
@@ -11712,6 +12301,61 @@ def main():
     if args.webui:
         _start_webui_sender()
 
+    # 字幕轉發初始化（從 config.json 讀取設定）
+    _init_subtitle_forwarder()
+
+    # 關鍵字通知初始化
+    _init_keyword_monitor()
+
+    # 懸浮字幕覆蓋視窗
+    global _overlay_proc_ref
+    if getattr(args, 'subtitle_overlay', False):
+        _overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtitle_overlay.py")
+        if os.path.isfile(_overlay_script):
+            # 清除前次殘留的 overlay 程序
+            try:
+                if IS_WINDOWS:
+                    # Windows: 用 PowerShell 找含 subtitle_overlay.py 的程序並 taskkill
+                    _tl = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "Get-CimInstance Win32_Process | Where-Object "
+                         "{$_.CommandLine -like '*subtitle_overlay.py*'} | "
+                         "Select-Object -ExpandProperty ProcessId"],
+                        capture_output=True, text=True, **_SUBPROCESS_FLAGS)
+                    for _line in _tl.stdout.strip().splitlines():
+                        _pid = _line.strip()
+                        if _pid.isdigit():
+                            try:
+                                subprocess.run(["taskkill", "/F", "/PID", _pid],
+                                               capture_output=True, **_SUBPROCESS_FLAGS)
+                            except Exception:
+                                pass
+                else:
+                    # macOS / Linux: pkill
+                    subprocess.run(["pkill", "-f", "subtitle_overlay.py"],
+                                   capture_output=True)
+            except Exception:
+                pass
+            try:
+                _overlay_proc = subprocess.Popen(
+                    [sys.executable, _overlay_script,
+                     "--config", os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")],
+                    **_SUBPROCESS_FLAGS)
+                # 等待 0.5 秒檢查是否立即退出（如 PyQt6 未安裝）
+                import time as _t
+                _t.sleep(0.5)
+                if _overlay_proc.poll() is not None:
+                    print(f"  {C_HIGHLIGHT}[懸浮字幕] 啟動失敗（可能未安裝 PyQt6：pip install PyQt6）{RESET}")
+                else:
+                    _overlay_proc_ref = _overlay_proc
+                    import atexit
+                    atexit.register(lambda: _overlay_proc_ref.terminate() if _overlay_proc_ref and _overlay_proc_ref.poll() is None else None)
+                    print(f"  [懸浮字幕] 已啟動覆蓋視窗（PID {_overlay_proc.pid}）")
+            except Exception as _e:
+                print(f"  {C_HIGHLIGHT}[懸浮字幕] 啟動失敗: {_e}{RESET}")
+        else:
+            print(f"  [懸浮字幕] 找不到 subtitle_overlay.py", file=sys.stderr)
+
     # --rec-device 自動啟用 --record
     if args.rec_device is not None and not args.record:
         args.record = True
@@ -11815,7 +12459,7 @@ def main():
             diarize = args.diarize
             num_speakers = args.num_speakers
             do_summarize = args.summarize is not None
-            summary_mode = "both"  # CLI 模式預設
+            summary_mode = "both" if do_summarize else "correct_only"  # 有 --summarize 才產摘要，否則只校正
             _default_fw = "large-v3" if (mode in _NOENG_MODELS and (REMOTE_WHISPER_CONFIG or _has_local_gpu())) else "large-v3-turbo"
             fw_model = args.model or _default_fw
             host, port = _resolve_ollama_host(args)
@@ -11871,15 +12515,17 @@ def main():
         # ── 連線檢查 ──
         ollama_available = False
         need_llm_translate = need_translate and engine == "llm"
-        need_llm_summary = do_summarize and summary_mode != "transcript"
+        need_llm_summary = do_summarize and summary_mode in ("both", "summary")
+        # 純轉錄模式：有 LLM 設定時自動校正逐字稿
+        need_llm_correct = (not need_translate) and host is not None
         need_remote_asr = use_remote_whisper and REMOTE_WHISPER_CONFIG
-        need_check = need_llm_translate or need_llm_summary or need_remote_asr
+        need_check = need_llm_translate or need_llm_summary or need_llm_correct or need_remote_asr
 
         if need_check:
             print(f"\n\n{C_TITLE}{BOLD}▎ 連線檢查{RESET}")
             print(f"{C_DIM}{'─' * 60}{RESET}")
 
-        if need_llm_translate or need_llm_summary:
+        if need_llm_translate or need_llm_summary or need_llm_correct:
             if not server_type:
                 server_type = _detect_llm_server(host, port)
             if server_type:
@@ -11888,9 +12534,11 @@ def main():
                     print(f"  {C_WHITE}LLM 翻譯    {RESET}{C_WHITE}{ollama_model}{RESET} {C_DIM}@ {host}:{port} ({srv_label}){RESET} {C_OK}✓{RESET}")
                 if need_llm_summary:
                     print(f"  {C_WHITE}LLM 摘要    {RESET}{C_WHITE}{summary_model}{RESET} {C_DIM}@ {host}:{port} ({srv_label}){RESET} {C_OK}✓{RESET}")
+                if need_llm_correct and not need_llm_translate:
+                    print(f"  {C_WHITE}LLM 校正    {RESET}{C_WHITE}{summary_model}{RESET} {C_DIM}@ {host}:{port} ({srv_label}){RESET} {C_OK}✓{RESET}")
                 ollama_available = True
             else:
-                label = "LLM" if need_llm_translate else "LLM 摘要"
+                label = "LLM" if need_llm_translate else ("LLM 校正" if need_llm_correct else "LLM 摘要")
                 model_name_display = ollama_model if need_llm_translate else summary_model
                 pad = " " * (12 - _str_display_width(label))
                 print(f"  {C_WHITE}{label}{pad}{RESET}{C_WHITE}{model_name_display}{RESET} {C_DIM}@ {host}:{port}{RESET} {C_HIGHLIGHT}✗ 無法連接{RESET}")
@@ -11983,8 +12631,10 @@ def main():
                 sp_info += "，本機"
             sp_info += f"，{num_speakers} 人" if num_speakers else "，自動偵測"
             print(f"  {C_WHITE}講者辨識    {sp_info}{RESET}")
-        if do_summarize and summary_mode != "transcript" and host:
+        if summary_mode in ("both", "summary") and host:
             print(f"  {C_WHITE}摘要模型    {summary_model} @ {host}:{port}{RESET}")
+        if ollama_available and summary_mode in ("both", "correct_only"):
+            print(f"  {C_WHITE}LLM 校正    啟用{RESET}")
         if meeting_topic:
             print(f"  {C_WHITE}會議主題    {meeting_topic}{RESET}")
         print(f"  {C_WHITE}檔案數      {RESET}{C_DIM}{len(args.input)}{RESET}")
@@ -11992,8 +12642,8 @@ def main():
         # CLI 指令回顯 + 確認（在設定總覽區塊內）
         _cli_kw = dict(input_files=args.input, mode=mode, model=fw_model,
                        diarize=diarize, num_speakers=num_speakers,
-                       summarize=(do_summarize and summary_mode != "transcript"),
-                       summary_model=summary_model if summary_mode != "transcript" else None,
+                       summarize=(summary_mode in ("both", "summary")),
+                       summary_model=summary_model if summary_mode in ("both", "summary") else None,
                        engine=engine if engine in ("argos", "nllb") else None,
                        llm_model=ollama_model if need_translate and engine == "llm" else None,
                        llm_host=f"{host}:{port}" if need_translate and engine == "llm" and host else None,
@@ -12003,7 +12653,7 @@ def main():
             sys.exit(0)
 
         # 逐檔處理
-        _do_llm_correct = do_summarize and can_summarize and summary_mode != "transcript"
+        _do_llm_correct = can_summarize and summary_mode in ("both", "correct_only")
         log_paths = []  # list of (log_path, original_input_path, session_dir)
         html_to_open = []  # 收集所有 HTML，最後一起開啟
 
@@ -12058,13 +12708,16 @@ def main():
                 translator_lb = None
                 translator_mic = None
             try:
+                _gen_srt = not getattr(args, 'no_srt', False)
+                _gen_vtt = not getattr(args, 'no_vtt', False)
                 log_path, t_html, session_dir = process_bidi_audio_files(
                     lb_path, mic_path, mode, translator_lb, translator_mic,
                     model_size=fw_model, remote_whisper_cfg=remote_whisper_cfg,
                     diarize=diarize, num_speakers=num_speakers,
                     correct_with_llm=_do_llm_correct,
                     llm_model=summary_model, llm_host=host, llm_port=port,
-                    llm_server_type=server_type, meeting_topic=meeting_topic)
+                    llm_server_type=server_type, meeting_topic=meeting_topic,
+                    gen_srt=_gen_srt, gen_vtt=_gen_vtt)
                 if log_path:
                     log_paths.append((log_path, lb_path, session_dir))
                 if t_html:
@@ -12073,13 +12726,16 @@ def main():
                 pass
         else:
             try:
+                _gen_srt = not getattr(args, 'no_srt', False)
+                _gen_vtt = not getattr(args, 'no_vtt', False)
                 for fpath in args.input:
                     log_path, t_html, session_dir = process_audio_file(fpath, mode, translator, model_size=fw_model,
                                                            diarize=diarize, num_speakers=num_speakers,
                                                            remote_whisper_cfg=remote_whisper_cfg,
                                                            correct_with_llm=_do_llm_correct,
                                                            llm_model=summary_model, llm_host=host, llm_port=port,
-                                                           llm_server_type=server_type, meeting_topic=meeting_topic)
+                                                           llm_server_type=server_type, meeting_topic=meeting_topic,
+                                                           gen_srt=_gen_srt, gen_vtt=_gen_vtt)
                     if log_path:
                         log_paths.append((log_path, fpath, session_dir))
                     if t_html:
@@ -12093,8 +12749,8 @@ def main():
         if remote_whisper_cfg:
             _ssh_close_cm(remote_whisper_cfg)
 
-        # 如果需要摘要且 LLM 伺服器可用，對產生的 log 檔自動摘要
-        if do_summarize and log_paths and can_summarize:
+        # 如果需要摘要且 LLM 伺服器可用，對產生的 log 檔自動摘要（correct_only 不產摘要）
+        if log_paths and can_summarize and summary_mode in ("both", "summary"):
             print(f"\n\n{C_TITLE}{BOLD}▎ 自動摘要{RESET}")
             print(f"{C_DIM}{'─' * 60}{RESET}")
             print(f"  {C_DIM}摘要模型: {summary_model} ({host}:{port}){RESET}")
@@ -12136,12 +12792,14 @@ def main():
                     except Exception:
                         pass
                 try:
+                    _sum_rounds = getattr(args, 'summary_rounds', 1) or 1
                     out_path, _, html_path = summarize_log_file(lp, summary_model, host, port,
                                                                   server_type=server_type,
                                                                   topic=meeting_topic,
                                                                   metadata=_meta,
                                                                   summary_mode=summary_mode,
-                                                                  audio_path=audio_in_session)
+                                                                  audio_path=audio_in_session,
+                                                                  summary_rounds=_sum_rounds)
                     if out_path:
                         if html_path:
                             html_to_open.append(html_path)
@@ -12157,6 +12815,29 @@ def main():
                         print(f"{C_DIM}{'═' * 60}{RESET}")
                 except Exception as e:
                     print(f"  {C_HIGHLIGHT}[錯誤] 摘要失敗: {e}{RESET}")
+
+        # 送出所有產出檔案給 WebUI
+        _output_files = []
+        for lp, orig_fpath, sess_dir in log_paths:
+            if sess_dir and os.path.isdir(sess_dir):
+                for fname in sorted(os.listdir(sess_dir)):
+                    fpath = os.path.join(sess_dir, fname)
+                    if os.path.isfile(fpath):
+                        # 排除原始音訊副本（太大不需要列出）
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".wma", ".aac", ".opus"):
+                            continue
+                        rel = os.path.relpath(fpath, os.path.dirname(os.path.abspath(__file__)))
+                        _output_files.append({"name": fname, "path": rel})
+        # 收集 session 目錄（相對路徑）
+        _session_dirs = []
+        for _, _, sess_dir in log_paths:
+            if sess_dir and os.path.isdir(sess_dir):
+                rel = os.path.relpath(sess_dir, os.path.dirname(os.path.abspath(__file__)))
+                if rel not in _session_dirs:
+                    _session_dirs.append(rel)
+        if _output_files or _session_dirs:
+            _webui_send({"type": "output_files", "files": _output_files, "dirs": _session_dirs})
 
         # 所有處理完成後一起開啟 HTML + 子目錄
         for hp in html_to_open:
@@ -12190,6 +12871,7 @@ def main():
         print(f"  {C_DIM}摘要模型: {model} ({host}:{port}){RESET}")
 
         print(f"  {C_DIM}正在連接 LLM 伺服器...{RESET}", end=" ", flush=True)
+        _webui_send({"type": "progress", "stage": "載入中", "detail": f"連接 LLM 伺服器（{host}:{port}）"})
         server_type = _detect_llm_server(host, port)
         if server_type:
             srv_label = "Ollama" if server_type == "ollama" else "OpenAI 相容"
@@ -12344,6 +13026,10 @@ def main():
                 summary = _retry_result.rstrip() + "\n\n" + summary.lstrip()
                 print(f"  {C_OK}重點摘要已補上{RESET}")
 
+            # 標題格式修正
+            summary = re.sub(r'#{2,4}\s*(?:最終)?(?:重點)?摘要', '## 重點摘要', summary)
+            summary = re.sub(r'#{2,4}\s*(?:校正)?逐字稿', '## 校正逐字稿', summary)
+
             summary = S2TWP.convert(summary)
 
             # 組裝 metadata（批次摘要只有摘要模型資訊）
@@ -12431,6 +13117,11 @@ def main():
                 print("[錯誤] 找不到系統音訊裝置或麥克風", file=sys.stderr)
                 sys.exit(1)
             _bidi_lb_id, _bidi_lb_name, _bidi_mic_id, _bidi_mic_name = bidi
+            # --mic-device 覆蓋自動偵測的麥克風
+            if getattr(args, 'mic_device', None) is not None:
+                import sounddevice as _sd_md
+                _bidi_mic_id = args.mic_device
+                _bidi_mic_name = _sd_md.query_devices(_bidi_mic_id)["name"]
             print(f"  {C_OK}系統音訊: {_bidi_lb_name}{RESET}")
             print(f"  {C_OK}麥克風:   {_bidi_mic_name}{RESET}")
 
@@ -12759,6 +13450,8 @@ def main():
                     args.mic = False
                 else:
                     _mic_lb_id, _, _mic_mic_id, _ = bidi_devs
+                    if getattr(args, 'mic_device', None) is not None:
+                        _mic_mic_id = args.mic_device
                     _use_mlx = _is_apple_silicon() and _has_mlx_whisper() and args.asr != "faster-whisper"
                     # 效能檢查：--mic 改用 faster-whisper/mlx-whisper，模型可能需要調整
                     _mic_rec_model = _recommended_whisper_model(mode)
@@ -12820,6 +13513,11 @@ def main():
                     print(f"  {C_WHITE}請確認 WASAPI Loopback 可用且有麥克風{RESET}")
                 sys.exit(1)
             _bidi_lb_id, _bidi_lb_name, _bidi_mic_id, _bidi_mic_name = bidi
+            # --mic-device 覆蓋自動偵測的麥克風
+            if getattr(args, 'mic_device', None) is not None:
+                import sounddevice as _sd_md
+                _bidi_mic_id = args.mic_device
+                _bidi_mic_name = _sd_md.query_devices(_bidi_mic_id)["name"]
             print(f"  {C_OK}系統音訊: {_bidi_lb_name}{RESET}")
             print(f"  {C_OK}麥克風:   {_bidi_mic_name}{RESET}")
 
